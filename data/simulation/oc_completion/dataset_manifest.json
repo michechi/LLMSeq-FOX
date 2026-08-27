@@ -1,0 +1,90 @@
+{
+  "mechanism": {
+    "task_family": "ordered_compliance",
+    "alphabet_size": 26,
+    "n_events": 20,
+    "key_letters": [
+      "W",
+      "D",
+      "Q",
+      "J",
+      "X",
+      "U"
+    ],
+    "kappa": {
+      "W": 0,
+      "D": 1,
+      "Q": 2,
+      "J": 3,
+      "X": 4,
+      "U": 5
+    },
+    "lag": 7,
+    "oracle": "rule_greedy_monotone_impl(tolerance=False, min_chain_length=2)",
+    "oracle_source": "src/analysis/mechanism_id/scripts/common.py"
+  },
+  "proposal": "iid Uniform(A..Z), length 20, with replacement, deduplicated pool",
+  "pool_size": 1100000,
+  "pool_latent_prevalence": 0.2917118181818182,
+  "data_seed": 9550,
+  "noise_pi": 0.3,
+  "noise_applied": "after stratified splitting, independent per split",
+  "split_procedure": "stratified on Y* (sklearn train_test_split), random_state = data_seed, data_seed+1, data_seed+2",
+  "sizes": {
+    "train": 400000,
+    "val": 50000,
+    "test": 50000
+  },
+  "splits": {
+    "ocdet/train": {
+      "n": 400000,
+      "latent_prevalence": 0.2917125,
+      "observed_prevalence": 0.2917125,
+      "noise_pi": 0.0,
+      "X_sha256": "331c531cd37071539696b8f74b730f2d96a0e78dc1ac15328224ecacf2b72e40",
+      "y_sha256": "7b032215ba040c6ca2c3f3de054125ac460273532dd4144f0bcae6950dd14784"
+    },
+    "ocdet/val": {
+      "n": 50000,
+      "latent_prevalence": 0.29172,
+      "observed_prevalence": 0.29172,
+      "noise_pi": 0.0,
+      "X_sha256": "1b4f19b0c4b4ea372457f01ac3a32e826fc5b2ae4106193ccd423eb24843b89a",
+      "y_sha256": "8d5811bdacef898d27e33fd9584843c57d4826efe9a1be95d6bbb3b7a0fec920"
+    },
+    "ocdet/test": {
+      "n": 50000,
+      "latent_prevalence": 0.2917,
+      "observed_prevalence": 0.2917,
+      "noise_pi": 0.0,
+      "X_sha256": "5b7c30aa314142f2d19f6131336224ab0c0a0eecd139d5afedd094ccb510c603",
+      "y_sha256": "93225134beeb93805bf27bfbe95fdabe541bec7bc88468b31621572f99c686f2"
+    },
+    "ocnoisy/train": {
+      "n": 400000,
+      "latent_prevalence": 0.2917125,
+      "observed_prevalence": 0.4179225,
+      "noise_pi": 0.3,
+      "X_sha256": "331c531cd37071539696b8f74b730f2d96a0e78dc1ac15328224ecacf2b72e40",
+      "y_sha256": "f8462d4c74c9379e371248d47bab9e96760ff46e361c306a0b9925910cef59ef"
+    },
+    "ocnoisy/val": {
+      "n": 50000,
+      "latent_prevalence": 0.29172,
+      "observed_prevalence": 0.41966,
+      "noise_pi": 0.3,
+      "X_sha256": "1b4f19b0c4b4ea372457f01ac3a32e826fc5b2ae4106193ccd423eb24843b89a",
+      "y_sha256": "9e28672defff00a688a7ab151aa4e328996a1a02efff3ef7e48c4891d0d7a64e"
+    },
+    "ocnoisy/test": {
+      "n": 50000,
+      "latent_prevalence": 0.2917,
+      "observed_prevalence": 0.41804,
+      "noise_pi": 0.3,
+      "X_sha256": "5b7c30aa314142f2d19f6131336224ab0c0a0eecd139d5afedd094ccb510c603",
+      "y_sha256": "e1bc274d46db9810b5a34b000f1247b099b02c38f7050a6a745f300f5ddff961"
+    }
+  },
+  "generation_time_s": 4.3,
+  "command": "/root/LLMSeq/repro/src/oc_completion/gen_datasets.py"
+}

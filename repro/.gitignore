@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode/
+.idea/
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Run-time outputs (regenerate with scripts/reproduce_main.sh)
+results/
+cache/
+logs/
+*.out
+*.err
+*.log
+
+# Backup / scratch
+*.bak
+*.tmp
+*.swp

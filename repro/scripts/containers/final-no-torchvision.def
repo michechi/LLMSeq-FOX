@@ -1,0 +1,33 @@
+Bootstrap: localimage
+From: pytorch-nvidia-base.sif
+
+%post
+    # Rimuovi torchvision che causa problemi
+    pip uninstall -y torchvision torchaudio || true
+    
+    # Rimuovi e reinstalla transformers e dipendenze
+    pip uninstall -y transformers datasets accelerate numpy || true
+    
+    # Installa tutto senza torchvision
+    pip install --no-cache-dir \
+        "numpy<2.0,>=1.26.0" \
+        "transformers==4.47.1" \
+        "tokenizers>=0.20.0" \
+        datasets \
+        accelerate \
+        peft \
+        bitsandbytes \
+        huggingface-hub \
+        scikit-learn \
+        networkx \
+        pandas \
+        pandarallel \
+        mne \
+        "urllib3<=1.26.15" \
+        matplotlib \
+        scipy \
+        tqdm \
+        rdkit
+
+%environment
+    export LC_ALL=C

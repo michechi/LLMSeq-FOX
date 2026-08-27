@@ -1,0 +1,15 @@
+.DS_Store
+.env
+__pycache__/
+*.py[cod]
+
+logs/
+checkpoints/
+results/matched_completion/
+
+*.pt
+*.pth
+*.ckpt
+
+hf_cache/
+huggingface/

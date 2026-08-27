@@ -1,0 +1,108 @@
+{
+  "mechanism": {
+    "task_family": "ordered_compliance",
+    "alphabet_size": 26,
+    "n_events": 20,
+    "key_letters": [
+      "W",
+      "D",
+      "Q",
+      "J",
+      "X",
+      "U"
+    ],
+    "kappa": {
+      "W": 0,
+      "D": 1,
+      "Q": 2,
+      "J": 3,
+      "X": 4,
+      "U": 5
+    },
+    "lag": 7,
+    "oracle": "rule_greedy_monotone_impl(tolerance=False, min_chain_length=2)",
+    "oracle_source": "src/analysis/mechanism_id/scripts/common.py"
+  },
+  "pair_seed": 9600,
+  "sizes": {
+    "val": 2000,
+    "test": 10000
+  },
+  "classification_data_tag": "ocdet",
+  "datasets": {
+    "two_hole_clean_val": {
+      "attempted": 2000,
+      "accepted": 2000,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "train_overlap_sequences": 0,
+      "path": "/root/LLMSeq/data/simulation/oc_completion/pairs/pairs_two_hole_clean_val.csv"
+    },
+    "two_hole_clean_test": {
+      "attempted": 10000,
+      "accepted": 10000,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "train_overlap_sequences": 0,
+      "path": "/root/LLMSeq/data/simulation/oc_completion/pairs/pairs_two_hole_clean_test.csv"
+    },
+    "two_hole_heldout_val": {
+      "attempted": 2506,
+      "accepted": 2000,
+      "rejection_rate": 0.2019,
+      "rejection_reasons": {
+        "negative_compliant_background": 506
+      },
+      "train_overlap_sequences": 0,
+      "path": "/root/LLMSeq/data/simulation/oc_completion/pairs/pairs_two_hole_heldout_val.csv"
+    },
+    "two_hole_heldout_test": {
+      "attempted": 12775,
+      "accepted": 10000,
+      "rejection_rate": 0.2172,
+      "rejection_reasons": {
+        "negative_compliant_background": 2775
+      },
+      "train_overlap_sequences": 0,
+      "path": "/root/LLMSeq/data/simulation/oc_completion/pairs/pairs_two_hole_heldout_test.csv"
+    },
+    "one_hole_clean_val": {
+      "attempted": 2000,
+      "accepted": 2000,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "train_overlap_sequences": 0,
+      "path": "/root/LLMSeq/data/simulation/oc_completion/pairs/pairs_one_hole_clean_val.csv"
+    },
+    "one_hole_clean_test": {
+      "attempted": 10000,
+      "accepted": 10000,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "train_overlap_sequences": 0,
+      "path": "/root/LLMSeq/data/simulation/oc_completion/pairs/pairs_one_hole_clean_test.csv"
+    },
+    "one_hole_heldout_val": {
+      "attempted": 2656,
+      "accepted": 2000,
+      "rejection_rate": 0.247,
+      "rejection_reasons": {
+        "negative_compliant_background": 656
+      },
+      "train_overlap_sequences": 0,
+      "path": "/root/LLMSeq/data/simulation/oc_completion/pairs/pairs_one_hole_heldout_val.csv"
+    },
+    "one_hole_heldout_test": {
+      "attempted": 13422,
+      "accepted": 10000,
+      "rejection_rate": 0.255,
+      "rejection_reasons": {
+        "negative_compliant_background": 3422
+      },
+      "train_overlap_sequences": 0,
+      "path": "/root/LLMSeq/data/simulation/oc_completion/pairs/pairs_one_hole_heldout_test.csv"
+    }
+  },
+  "command": "/root/LLMSeq/repro/src/oc_completion/gen_pairs.py",
+  "generation_time_s": 22.7
+}
