@@ -1,0 +1,8 @@
+{
+  "array_index": 39,
+  "model": "llama_lora",
+  "model_kind": "hf",
+  "model_seed": 9950,
+  "noise_pi": 0.3,
+  "status": "complete"
+}

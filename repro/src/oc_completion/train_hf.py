@@ -76,6 +76,21 @@ WARMUP_RATIO = 0.06
 MAX_LENGTH = 64
 
 
+def atomic_torch_save(payload: dict, path: Path) -> None:
+    """Replace a checkpoint only after the new file is fully written."""
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    torch.save(payload, tmp_path)
+    os.replace(tmp_path, path)
+
+
+def atomic_json_dump(payload, path: Path) -> None:
+    """Write JSON without exposing a partially written destination file."""
+    tmp_path = path.with_name(f".{path.name}.tmp")
+    with open(tmp_path, "w") as f:
+        json.dump(payload, f, indent=2, default=str)
+    os.replace(tmp_path, path)
+
+
 def set_seed(seed: int) -> None:
     os.environ["PYTHONHASHSEED"] = str(seed)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -330,6 +345,27 @@ def main() -> None:
     best_path = run_dir / "best.pt"
     if args.resume and last_path.exists():
         ck = torch.load(last_path, map_location="cpu", weights_only=False)
+        expected = {
+            "arm": args.arm,
+            "task": args.task,
+            "seed": args.seed,
+            "max_length": args.max_length,
+        }
+        for key, value in expected.items():
+            if ck.get(key) != value:
+                raise ValueError(
+                    f"resume checkpoint {key}={ck.get(key)!r}, expected {value!r}"
+                )
+        if ck.get("max_epochs", args.max_epochs) != args.max_epochs:
+            raise ValueError(
+                "--max_epochs must match the original run when resuming "
+                f"({ck.get('max_epochs')} != {args.max_epochs})"
+            )
+        if ck.get("patience", args.patience) != args.patience:
+            raise ValueError(
+                "--patience must match the original run when resuming "
+                f"({ck.get('patience')} != {args.patience})"
+            )
         model.load_state_dict(ck["state_dict"])
         optimizer.load_state_dict(ck["optimizer"])
         scheduler.load_state_dict(ck["scheduler"])
@@ -338,9 +374,24 @@ def main() -> None:
         no_improve, history = ck["no_improve"], ck["history"]
         t_prev = ck.get("wallclock_s", 0.0)
         torch.set_rng_state(ck["torch_rng"])
+        if torch.cuda.is_available() and ck.get("cuda_rng") is not None:
+            torch.cuda.set_rng_state_all(ck["cuda_rng"])
+        if ck.get("loader_rng") is not None:
+            gen.set_state(ck["loader_rng"])
         np.random.set_state(ck["np_rng"])
         random.setstate(ck["py_rng"])
         print(f"[train_hf] resumed at epoch {start_epoch}", flush=True)
+
+    # A timeout can arrive after the epoch checkpoint is committed but before
+    # the early-stopping branch below runs.  Preserve the original stopping
+    # decision instead of training one extra epoch after requeue.
+    if no_improve >= args.patience:
+        print(
+            f"[train_hf] early-stopping state already reached at epoch "
+            f"{start_epoch}; proceeding to final evaluation",
+            flush=True,
+        )
+        start_epoch = args.max_epochs
 
     config_payload = {
         "arm": args.arm, "task": args.task, "seed": args.seed,
@@ -365,8 +416,7 @@ def main() -> None:
         "note": "completion diagnostics never influence early stopping, "
                 "checkpoint selection or the LR schedule",
     }
-    with open(run_dir / "config.json", "w") as f:
-        json.dump(config_payload, f, indent=2, default=str)
+    atomic_json_dump(config_payload, run_dir / "config.json")
 
     t0 = time.time()
     for epoch in range(start_epoch, args.max_epochs):
@@ -397,36 +447,49 @@ def main() -> None:
 
         if val["loss"] < best_loss:
             best_loss, best_epoch, no_improve = val["loss"], epoch + 1, 0
-            torch.save({"state_dict": model.state_dict(), "arm": args.arm,
-                        "max_length": args.max_length, "epoch": epoch + 1,
-                        "seed": args.seed, "task": args.task,
-                        "val": {k: v for k, v in val.items()
-                                if k not in ("probs", "labels")}},
-                       best_path)
+            atomic_torch_save(
+                {"state_dict": model.state_dict(), "arm": args.arm,
+                 "max_length": args.max_length, "epoch": epoch + 1,
+                 "max_epochs": args.max_epochs, "patience": args.patience,
+                 "seed": args.seed, "task": args.task,
+                 "val": {k: v for k, v in val.items()
+                         if k not in ("probs", "labels")}},
+                best_path,
+            )
         else:
             no_improve += 1
 
-        torch.save({"state_dict": model.state_dict(),
-                    "optimizer": optimizer.state_dict(),
-                    "scheduler": scheduler.state_dict(),
-                    "arm": args.arm, "max_length": args.max_length,
-                    "epoch": epoch, "best_loss": best_loss,
-                    "best_epoch": best_epoch, "no_improve": no_improve,
-                    "history": history,
-                    "wallclock_s": t_prev + time.time() - t0,
-                    "torch_rng": torch.get_rng_state(),
-                    "np_rng": np.random.get_state(),
-                    "py_rng": random.getstate(),
-                    "seed": args.seed, "task": args.task}, last_path)
-        with open(run_dir / "history.json", "w") as f:
-            json.dump(history, f, indent=2)
+        atomic_torch_save(
+            {"state_dict": model.state_dict(),
+             "optimizer": optimizer.state_dict(),
+             "scheduler": scheduler.state_dict(),
+             "arm": args.arm, "max_length": args.max_length,
+             "max_epochs": args.max_epochs, "patience": args.patience,
+             "epoch": epoch, "best_loss": best_loss,
+             "best_epoch": best_epoch, "no_improve": no_improve,
+             "history": history,
+             "wallclock_s": t_prev + time.time() - t0,
+             "torch_rng": torch.get_rng_state(),
+             "cuda_rng": (torch.cuda.get_rng_state_all()
+                          if torch.cuda.is_available() else None),
+             "loader_rng": gen.get_state(),
+             "np_rng": np.random.get_state(),
+             "py_rng": random.getstate(),
+             "seed": args.seed, "task": args.task},
+            last_path,
+        )
+        atomic_json_dump(history, run_dir / "history.json")
 
         if no_improve >= args.patience:
             break
 
-    torch.save({"state_dict": model.state_dict(), "arm": args.arm,
-                "max_length": args.max_length, "epoch": len(history),
-                "seed": args.seed, "task": args.task}, run_dir / "final.pt")
+    atomic_torch_save(
+        {"state_dict": model.state_dict(), "arm": args.arm,
+         "max_length": args.max_length, "epoch": len(history),
+         "max_epochs": args.max_epochs, "patience": args.patience,
+         "seed": args.seed, "task": args.task},
+        run_dir / "final.pt",
+    )
 
     # restore best, tune threshold on validation, evaluate on test
     from src.experiments.BERT_fraction_experiment import find_optimal_threshold
@@ -467,16 +530,16 @@ def main() -> None:
         "smoke": args.smoke, "host": os.uname().nodename,
     }
     append_result(args.results_csv, row)
-    with open(run_dir / "meta.json", "w") as f:
-        json.dump({"optimal_threshold": float(thr),
-                   "val_f1_optimal": float(val_f1_opt),
-                   "val_auc": val["auc"], "val_loss": val["loss"],
-                   "epochs_done": len(history), "best_epoch": best_epoch,
-                   "seed": args.seed, "task": args.task,
-                   "model_name": spec["model_name"], "peft": spec["peft"]},
-                  f, indent=2)
-    with open(done_marker, "w") as f:
-        json.dump(row, f, indent=2, default=str)
+    atomic_json_dump(
+        {"optimal_threshold": float(thr),
+         "val_f1_optimal": float(val_f1_opt),
+         "val_auc": val["auc"], "val_loss": val["loss"],
+         "epochs_done": len(history), "best_epoch": best_epoch,
+         "seed": args.seed, "task": args.task,
+         "model_name": spec["model_name"], "peft": spec["peft"]},
+        run_dir / "meta.json",
+    )
+    atomic_json_dump(row, done_marker)
     print(f"[train_hf] DONE {args.arm}/{args.task}/s{args.seed}: "
           f"test_auc_obs={test['auc']:.4f} auc_latent={auc_latent:.4f} "
           f"best_epoch={best_epoch} wall={wall}s", flush=True)

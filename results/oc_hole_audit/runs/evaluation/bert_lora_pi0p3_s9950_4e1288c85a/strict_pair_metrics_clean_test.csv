@@ -1,0 +1,2 @@
+n_pairs,tie_tolerance,strict_win_rate,tie_rate,loss_rate,pair_accuracy,pair_accuracy_ci_lo,pair_accuracy_ci_hi,mean_margin,median_margin,flattened_candidate_auc,bootstrap_cluster,bootstrap_clusters,bootstrap_replicates,mean_duplicate_range,max_duplicate_range,n_jitter_candidates,n_repeats,model,noise_level,model_seed,checkpoint_epoch,split,background
+10000,0.0,0.4838,0.0167,0.4995,0.49215,0.48165,0.50190125,-0.0005751708984375,0.0,0.493988415,pair_id,10000,1000,0.0,0.0,128,4,bert_lora,0.3,9950,20,test,clean

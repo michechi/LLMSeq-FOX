@@ -61,6 +61,19 @@ CKPT_ROOT = REPO_ROOT / "checkpoints" / "oc_completion"
 
 TASK_DIRNAME = {"ocdet": "oc_deterministic", "ocnoisy": "oc_noisy"}
 
+PAD_ID = 0
+OC_TOKEN_TO_ID = {
+    letter: token_id for token_id, letter in enumerate(ALPHABET, start=1)
+}
+OC_VOCAB_SIZE = len(OC_TOKEN_TO_ID) + 1
+OC_ENCODING = {
+    "name": "oc_pad0_a1_z26",
+    "padding_id": PAD_ID,
+    "alphabet_ids": dict(OC_TOKEN_TO_ID),
+    "sequence_length": N_EVENTS,
+    "vocab_size": OC_VOCAB_SIZE,
+}
+
 # Paper-documented optimal recipes (NLDL appendix, tab:dl_optimal); these are
 # the task-spec expected defaults. RNNTransformer uses the repo's as-run
 # OPTIMAL_CONFIGS because paper and code disagree (recorded deviation).

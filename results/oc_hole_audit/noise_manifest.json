@@ -1,0 +1,187 @@
+{
+  "command": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/repro/src/oc_completion/ordered_data.py --data-root /fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit --results-root /fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit --data-seed 9550 --noise-seed 9650 --hole-seed 9750 --n-workers 8",
+  "construction": "Y_pi = Y_star XOR (shared_uniform < pi)",
+  "data_seed": 9550,
+  "global_uniform_order": [
+    "train",
+    "val",
+    "test"
+  ],
+  "mechanism": {
+    "alphabet_size": 26,
+    "kappa": {
+      "D": 1,
+      "J": 3,
+      "Q": 2,
+      "U": 5,
+      "W": 0,
+      "X": 4
+    },
+    "key_letters": [
+      "W",
+      "D",
+      "Q",
+      "J",
+      "X",
+      "U"
+    ],
+    "lag": 7,
+    "n_events": 20,
+    "oracle": "rule_greedy_monotone_impl(tolerance=False, min_chain_length=2)",
+    "oracle_source": "src/analysis/mechanism_id/scripts/common.py",
+    "task_family": "ordered_compliance"
+  },
+  "nested_flip_masks": true,
+  "noise_levels": [
+    0.0,
+    0.1,
+    0.2,
+    0.3
+  ],
+  "noise_seed": 9650,
+  "one_uniform_per_example": true,
+  "schema_version": 1,
+  "splits": {
+    "test": {
+      "conditions": {
+        "0p0": {
+          "empirical_flip_fraction": 0.0,
+          "flip_column": "flip_pi_0p0",
+          "number_flipped": 0,
+          "observed_column": "Y_pi_0p0",
+          "observed_label_oracle_auc_empirical": 1.0,
+          "observed_label_oracle_auc_formula": 1.0,
+          "observed_prevalence": 0.2917,
+          "pi": 0.0
+        },
+        "0p1": {
+          "empirical_flip_fraction": 0.09998,
+          "flip_column": "flip_pi_0p1",
+          "number_flipped": 4999,
+          "observed_column": "Y_pi_0p1",
+          "observed_label_oracle_auc_empirical": 0.8720283823938841,
+          "observed_label_oracle_auc_formula": 0.8718851237850811,
+          "observed_prevalence": 0.33204,
+          "pi": 0.1
+        },
+        "0p2": {
+          "empirical_flip_fraction": 0.20238,
+          "flip_column": "flip_pi_0p2",
+          "number_flipped": 10119,
+          "observed_column": "Y_pi_0p2",
+          "observed_label_oracle_auc_empirical": 0.7617701980091875,
+          "observed_label_oracle_auc_formula": 0.7644565795109763,
+          "observed_prevalence": 0.37412,
+          "pi": 0.2
+        },
+        "0p3": {
+          "empirical_flip_fraction": 0.3011,
+          "flip_column": "flip_pi_0p3",
+          "number_flipped": 15055,
+          "observed_column": "Y_pi_0p3",
+          "observed_label_oracle_auc_empirical": 0.6684540473669763,
+          "observed_label_oracle_auc_formula": 0.6700098734055076,
+          "observed_prevalence": 0.41532,
+          "pi": 0.3
+        }
+      },
+      "n": 50000,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit/noise/test.parquet",
+      "sha256": "e79a6d32f9cd46c3cf4709375c6537d57e93ae40d370d44ccdb338d9c6e5f173"
+    },
+    "train": {
+      "conditions": {
+        "0p0": {
+          "empirical_flip_fraction": 0.0,
+          "flip_column": "flip_pi_0p0",
+          "number_flipped": 0,
+          "observed_column": "Y_pi_0p0",
+          "observed_label_oracle_auc_empirical": 1.0,
+          "observed_label_oracle_auc_formula": 1.0,
+          "observed_prevalence": 0.2917125,
+          "pi": 0.0
+        },
+        "0p1": {
+          "empirical_flip_fraction": 0.1007025,
+          "flip_column": "flip_pi_0p1",
+          "number_flipped": 40281,
+          "observed_column": "Y_pi_0p1",
+          "observed_label_oracle_auc_empirical": 0.8710633569531966,
+          "observed_label_oracle_auc_formula": 0.8718889195781012,
+          "observed_prevalence": 0.333775,
+          "pi": 0.1
+        },
+        "0p2": {
+          "empirical_flip_fraction": 0.199865,
+          "flip_column": "flip_pi_0p2",
+          "number_flipped": 79946,
+          "observed_column": "Y_pi_0p2",
+          "observed_label_oracle_auc_empirical": 0.764604314534663,
+          "observed_label_oracle_auc_formula": 0.7644611295268617,
+          "observed_prevalence": 0.3750225,
+          "pi": 0.2
+        },
+        "0p3": {
+          "empirical_flip_fraction": 0.300155,
+          "flip_column": "flip_pi_0p3",
+          "number_flipped": 120062,
+          "observed_column": "Y_pi_0p3",
+          "observed_label_oracle_auc_empirical": 0.6697878649703458,
+          "observed_label_oracle_auc_formula": 0.6700135754787271,
+          "observed_prevalence": 0.4164725,
+          "pi": 0.3
+        }
+      },
+      "n": 400000,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit/noise/train.parquet",
+      "sha256": "f2d75abe1949fc94a89905ca9d7d003d44952adb3fe8077478d30f73be7baff6"
+    },
+    "val": {
+      "conditions": {
+        "0p0": {
+          "empirical_flip_fraction": 0.0,
+          "flip_column": "flip_pi_0p0",
+          "number_flipped": 0,
+          "observed_column": "Y_pi_0p0",
+          "observed_label_oracle_auc_empirical": 1.0,
+          "observed_label_oracle_auc_formula": 1.0,
+          "observed_prevalence": 0.29172,
+          "pi": 0.0
+        },
+        "0p1": {
+          "empirical_flip_fraction": 0.10042,
+          "flip_column": "flip_pi_0p1",
+          "number_flipped": 5021,
+          "observed_column": "Y_pi_0p1",
+          "observed_label_oracle_auc_empirical": 0.8714865518403756,
+          "observed_label_oracle_auc_formula": 0.8718911968899317,
+          "observed_prevalence": 0.33262,
+          "pi": 0.1
+        },
+        "0p2": {
+          "empirical_flip_fraction": 0.20242,
+          "flip_column": "flip_pi_0p2",
+          "number_flipped": 10121,
+          "observed_column": "Y_pi_0p2",
+          "observed_label_oracle_auc_empirical": 0.761933540388626,
+          "observed_label_oracle_auc_formula": 0.7644638593703937,
+          "observed_prevalence": 0.37534,
+          "pi": 0.2
+        },
+        "0p3": {
+          "empirical_flip_fraction": 0.30202,
+          "flip_column": "flip_pi_0p3",
+          "number_flipped": 15101,
+          "observed_column": "Y_pi_0p3",
+          "observed_label_oracle_auc_empirical": 0.6681551647346863,
+          "observed_label_oracle_auc_formula": 0.6700157966038369,
+          "observed_prevalence": 0.41738,
+          "pi": 0.3
+        }
+      },
+      "n": 50000,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit/noise/val.parquet",
+      "sha256": "cd0a8ab429384ce50dc3cd573e55d2661c532398ecec081d36895a5b7fa6e49f"
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "base_schema": {
+    "X": "string",
+    "Y_star": "uint8",
+    "sequence_id": "string"
+  },
+  "command": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/repro/src/oc_completion/ordered_data.py --data-root /fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit --results-root /fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit --data-seed 9550 --noise-seed 9650 --hole-seed 9750 --n-workers 8",
+  "data_seed": 9550,
+  "generation_time_s": 9.425,
+  "hole_artifacts": {
+    "category_encoding": {
+      "decisive": 1,
+      "fixed_one": 2,
+      "fixed_zero": 0
+    },
+    "diagnostic_bases": 500,
+    "diagnostic_policy": "latent-stratified subset of hole validation bases",
+    "manifest_path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/hole_manifest.parquet",
+    "manifest_sha256": "5bcecc82da42b06d1b4c4cf40d2f2d493966f3251f7fe6325df5d198c64440ea",
+    "oracle_arrays_path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/hole_oracle_labels.npz",
+    "oracle_arrays_sha256": "e44eb54158fe3158689534a54ce2675d5b4d14d106bb4f73a5c4de9684d97c93",
+    "oracle_label_shape": [
+      12000,
+      20,
+      26
+    ],
+    "test_bases": 10000,
+    "validation_bases": 2000
+  },
+  "hole_seed": 9750,
+  "mechanism": {
+    "alphabet_size": 26,
+    "kappa": {
+      "D": 1,
+      "J": 3,
+      "Q": 2,
+      "U": 5,
+      "W": 0,
+      "X": 4
+    },
+    "key_letters": [
+      "W",
+      "D",
+      "Q",
+      "J",
+      "X",
+      "U"
+    ],
+    "lag": 7,
+    "n_events": 20,
+    "oracle": "rule_greedy_monotone_impl(tolerance=False, min_chain_length=2)",
+    "oracle_source": "src/analysis/mechanism_id/scripts/common.py",
+    "task_family": "ordered_compliance"
+  },
+  "noise_seed": 9650,
+  "pool_latent_prevalence": 0.2917118181818182,
+  "pool_size": 1100000,
+  "proposal": "iid Uniform(A..Z), length 20, with replacement, deduplicated pool",
+  "schema_version": 1,
+  "sizes": {
+    "test": 50000,
+    "train": 400000,
+    "val": 50000
+  },
+  "split_procedure": "latent-stratified fixed split; random states data_seed, data_seed+1, data_seed+2",
+  "splits": {
+    "test": {
+      "latent_prevalence": 0.2917,
+      "n": 50000,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit/splits/test.parquet",
+      "sha256": "7cad89732a08354e0bd2493b5a1a282ce691f91693c0e19edeaa21c4249d62f6"
+    },
+    "train": {
+      "latent_prevalence": 0.2917125,
+      "n": 400000,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit/splits/train.parquet",
+      "sha256": "e97d987d50a126679483b274ed71849fb3e323d3518506e1d27e7829f2959f93"
+    },
+    "val": {
+      "latent_prevalence": 0.29172,
+      "n": 50000,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit/splits/val.parquet",
+      "sha256": "2ef7a2d56e770a9a0325175153ea324cdf2e0e9168c63d3f87ce66f81a5ab5a4"
+    }
+  }
+}

@@ -1,0 +1,90 @@
+{
+  "mechanism": {
+    "task_family": "ordered_compliance",
+    "alphabet_size": 26,
+    "n_events": 20,
+    "key_letters": [
+      "W",
+      "D",
+      "Q",
+      "J",
+      "X",
+      "U"
+    ],
+    "kappa": {
+      "W": 0,
+      "D": 1,
+      "Q": 2,
+      "J": 3,
+      "X": 4,
+      "U": 5
+    },
+    "lag": 7,
+    "oracle": "rule_greedy_monotone_impl(tolerance=False, min_chain_length=2)",
+    "oracle_source": "src/analysis/mechanism_id/scripts/common.py"
+  },
+  "proposal": "iid Uniform(A..Z), length 20, with replacement, deduplicated pool",
+  "pool_size": 6600,
+  "pool_latent_prevalence": 0.2959090909090909,
+  "data_seed": 9550,
+  "noise_pi": 0.3,
+  "noise_applied": "after stratified splitting, independent per split",
+  "split_procedure": "stratified on Y* (sklearn train_test_split), random_state = data_seed, data_seed+1, data_seed+2",
+  "sizes": {
+    "train": 2000,
+    "val": 500,
+    "test": 500
+  },
+  "splits": {
+    "ocdet_smoke/train": {
+      "n": 2000,
+      "latent_prevalence": 0.296,
+      "observed_prevalence": 0.296,
+      "noise_pi": 0.0,
+      "X_sha256": "ece278092f21e4126586f5bebbc64ed305f68b26fd5f2f7a3aa99a8a173e905b",
+      "y_sha256": "e817eb43c937d293a94d5ec0941e0daa7527b50d2c4e068f4d338d68c48573db"
+    },
+    "ocdet_smoke/val": {
+      "n": 500,
+      "latent_prevalence": 0.296,
+      "observed_prevalence": 0.296,
+      "noise_pi": 0.0,
+      "X_sha256": "3684f80748063c8fa273fbb33d67a6fcd52467e980413bebe814dbfde9eb2526",
+      "y_sha256": "abe0578e9bf3f9bff7fc2c3f34892cb09f2e0c68224c49126f61a4d8a288ad93"
+    },
+    "ocdet_smoke/test": {
+      "n": 500,
+      "latent_prevalence": 0.296,
+      "observed_prevalence": 0.296,
+      "noise_pi": 0.0,
+      "X_sha256": "f906b744a00ecf5913a8e64ab9dec354666c23d597d304a3773cd903263bc181",
+      "y_sha256": "f7bee3c5e1de4fc2c656ade8d20fcfc772af5880c65fda4808b87acc314494a7"
+    },
+    "ocnoisy_smoke/train": {
+      "n": 2000,
+      "latent_prevalence": 0.296,
+      "observed_prevalence": 0.4255,
+      "noise_pi": 0.3,
+      "X_sha256": "ece278092f21e4126586f5bebbc64ed305f68b26fd5f2f7a3aa99a8a173e905b",
+      "y_sha256": "df67ac17dd2582e13a809edeec2ccef7af0d7fc03950e73afa5532cd3d09c2b2"
+    },
+    "ocnoisy_smoke/val": {
+      "n": 500,
+      "latent_prevalence": 0.296,
+      "observed_prevalence": 0.402,
+      "noise_pi": 0.3,
+      "X_sha256": "3684f80748063c8fa273fbb33d67a6fcd52467e980413bebe814dbfde9eb2526",
+      "y_sha256": "1a07348bbc6decf65991c8e89603b62da051489f73f29702bdef858ef53b6737"
+    },
+    "ocnoisy_smoke/test": {
+      "n": 500,
+      "latent_prevalence": 0.296,
+      "observed_prevalence": 0.44,
+      "noise_pi": 0.3,
+      "X_sha256": "f906b744a00ecf5913a8e64ab9dec354666c23d597d304a3773cd903263bc181",
+      "y_sha256": "173ef43e6f79c193a341bd4c1a70c7eab802598a89e40e5e68ed0ee72f68cb7f"
+    }
+  },
+  "generation_time_s": 0.3,
+  "command": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/repro/src/oc_completion/gen_datasets.py --smoke --n_workers 8"
+}

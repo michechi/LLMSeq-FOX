@@ -1,0 +1,4 @@
+model,noise_level,model_seed,checkpoint_epoch,split,segment,n_positions,n_decisive,n_sequences,fraction_sequences_with_decisive,position_auroc,position_auprc,within_sequence_average_precision,top1_localization_accuracy,top3_decisive_recall,mean_delta_decisive,mean_delta_fixed_zero,mean_delta_fixed_one,position_auroc_ci_lo,position_auroc_ci_hi,bootstrap_clusters,bootstrap_replicates
+bert_lora,0.0,9950,20,test,all,200000,38941,10000,0.9489,0.9999999974488977,0.999999989448552,1.0,1.0,0.7838535301070868,13.172127554294878,0.2185780847638569,0.2606603786238246,0.9999999904574484,1.0,10000,1000
+bert_lora,0.0,9950,20,test,negative_create,141660,31859,7083,0.9901171819850346,1.0,1.0,1.0,1.0,0.7075411588743972,13.235760008945666,0.2185780847638569,,1.0,1.0,7083,1000
+bert_lora,0.0,9950,20,test,positive_destroy,58340,7082,2917,0.8488172780253685,0.9999999917357456,0.9999999401850951,1.0,1.0,1.0,12.88587135933308,,0.2606603786238246,0.9999999668944228,1.0,2917,1000

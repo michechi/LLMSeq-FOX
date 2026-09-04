@@ -1,0 +1,5 @@
+model,noise_level,model_seed,checkpoint_epoch,split,category,threshold_name,threshold,n_positions,mean_logit_range,mean_logit_std,mean_probability_range,prediction_flip_rate,all_candidates_correct_fraction,individual_candidate_accuracy,mean_worst_case_correct_class_score,prediction_flip_rate_ci_lo,prediction_flip_rate_ci_hi,bootstrap_clusters,bootstrap_replicates
+llama_lora,0.0,9950,13,test,fixed_zero,fixed_0p5,0.5,109801,0.035903021693229675,0.011978691443800926,1.9238770576635034e-09,0.0,1.0,1.0,0.9999999403953552,0.0,0.0,7083,1000
+llama_lora,0.0,9950,13,test,fixed_zero,validation_selected,0.49999999999999994,109801,0.035903021693229675,0.011978691443800926,1.9238770576635034e-09,0.0,1.0,1.0,0.9999999403953552,0.0,0.0,7083,1000
+llama_lora,0.0,9950,13,test,fixed_one,fixed_0p5,0.5,51258,0.029105670750141144,0.008274628780782223,1.255862774884875e-10,0.0,1.0,1.0,1.0,0.0,0.0,2917,1000
+llama_lora,0.0,9950,13,test,fixed_one,validation_selected,0.49999999999999994,51258,0.029105670750141144,0.008274628780782223,1.255862774884875e-10,0.0,1.0,1.0,1.0,0.0,0.0,2917,1000

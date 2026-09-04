@@ -1,0 +1,7 @@
+model,noise_level,model_seed,checkpoint_epoch,split,segment,target,n_positions,macro_candidate_auc,pooled_candidate_auc,valid_invalid_pairwise_win_rate,top1_valid_filling_accuracy,tie_aware_top1_accuracy,mrr_first_valid_filling,mean_valid_minus_invalid_logit_margin,random_choice_reference,macro_candidate_auc_ci_lo,macro_candidate_auc_ci_hi,top1_valid_filling_accuracy_ci_lo,top1_valid_filling_accuracy_ci_hi,bootstrap_clusters,bootstrap_replicates,excluded_empty_target_positions,excluded_all_valid_positions
+bert_lora,0.0,9950,20,test,all_targets,mixed,77882,1.0,0.9999999995385759,1.0,1.0,1.0,1.0,12.982561798646243,0.5,1.0,1.0,1.0,1.0,9489,1000,,
+bert_lora,0.0,9950,20,test,target_0,0,38941,1.0,0.9999999996173632,1.0,1.0,1.0,1.0,12.982561798646243,0.8175770840699836,1.0,1.0,1.0,1.0,9489,1000,51258.0,109801.0
+bert_lora,0.0,9950,20,test,target_1,1,38941,1.0,0.999999999617363,1.0,1.0,1.0,1.0,12.982561798646243,0.18242291593001642,1.0,1.0,1.0,1.0,9489,1000,109801.0,51258.0
+bert_lora,0.0,9950,20,test,create_compliance,mixed,31859,1.0,0.9999999999875828,1.0,1.0,1.0,1.0,13.053944528437764,0.13581719451332436,1.0,1.0,1.0,1.0,7013,1000,,
+bert_lora,0.0,9950,20,test,destroy_compliance,mixed,7082,1.0,0.9999999991338019,1.0,1.0,1.0,1.0,12.661440309176031,0.6079171463949775,1.0,1.0,1.0,1.0,2476,1000,,
+bert_lora,0.0,9950,20,test,preserve_base_label,mixed,38941,1.0,0.9999999997286051,1.0,1.0,1.0,1.0,12.982561798646243,0.7783244079307355,1.0,1.0,1.0,1.0,9489,1000,,

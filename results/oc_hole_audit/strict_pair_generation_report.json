@@ -1,0 +1,271 @@
+{
+  "family": "strict_four_chain",
+  "mechanism": {
+    "task_family": "ordered_compliance",
+    "alphabet_size": 26,
+    "n_events": 20,
+    "key_letters": [
+      "W",
+      "D",
+      "Q",
+      "J",
+      "X",
+      "U"
+    ],
+    "kappa": {
+      "W": 0,
+      "D": 1,
+      "Q": 2,
+      "J": 3,
+      "X": 4,
+      "U": 5
+    },
+    "lag": 7,
+    "oracle": "rule_greedy_monotone_impl(tolerance=False, min_chain_length=2)",
+    "oracle_source": "src/analysis/mechanism_id/scripts/common.py"
+  },
+  "pair_seed": 9700,
+  "sizes": {
+    "val": 2000,
+    "test": 10000
+  },
+  "datasets": {
+    "strict_clean_val": {
+      "attempted": 2000,
+      "accepted": 2000,
+      "rejected": 0,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "background_key_count_distribution": {
+        "attempted": {
+          "0": 2000
+        },
+        "accepted": {
+          "0": 2000
+        }
+      },
+      "background_ordered_run_distribution": {
+        "attempted": {
+          "0": 2000
+        },
+        "accepted": {
+          "0": 2000
+        }
+      },
+      "unique_base_sequences": 2000,
+      "repeated_base_pairs": 0,
+      "at_most_one_pair_per_base_when_possible": true,
+      "candidate_storage_counts": {
+        "0": 1004,
+        "1": 996
+      },
+      "oracle_pair_accuracy": 1.0,
+      "invariant_checks": 2000,
+      "invariant_violations": 0,
+      "exact_representation_ties": {
+        "letter_counts": 2000,
+        "aggregated_lag_pair_counts": 2000,
+        "key_membership_mask": 2000,
+        "chain_occupancy": 2000,
+        "maximal_run_histogram": 2000,
+        "per_chain_unordered_bags": 2000,
+        "within_chain_depth_multisets": 2000,
+        "increasing_decreasing_edge_counts": 2000
+      },
+      "conditioning": "Clean backgrounds contain only non-key distractors."
+    },
+    "strict_clean_test": {
+      "attempted": 10000,
+      "accepted": 10000,
+      "rejected": 0,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "background_key_count_distribution": {
+        "attempted": {
+          "0": 10000
+        },
+        "accepted": {
+          "0": 10000
+        }
+      },
+      "background_ordered_run_distribution": {
+        "attempted": {
+          "0": 10000
+        },
+        "accepted": {
+          "0": 10000
+        }
+      },
+      "unique_base_sequences": 10000,
+      "repeated_base_pairs": 0,
+      "at_most_one_pair_per_base_when_possible": true,
+      "candidate_storage_counts": {
+        "0": 5036,
+        "1": 4964
+      },
+      "oracle_pair_accuracy": 1.0,
+      "invariant_checks": 10000,
+      "invariant_violations": 0,
+      "exact_representation_ties": {
+        "letter_counts": 10000,
+        "aggregated_lag_pair_counts": 10000,
+        "key_membership_mask": 10000,
+        "chain_occupancy": 10000,
+        "maximal_run_histogram": 10000,
+        "per_chain_unordered_bags": 10000,
+        "within_chain_depth_multisets": 10000,
+        "increasing_decreasing_edge_counts": 10000
+      },
+      "conditioning": "Clean backgrounds contain only non-key distractors."
+    },
+    "strict_heldout_val": {
+      "attempted": 2319,
+      "accepted": 2000,
+      "rejected": 319,
+      "rejection_rate": 0.13755929279862011,
+      "rejection_reasons": {
+        "negative_compliant_background": 319
+      },
+      "background_key_count_distribution": {
+        "attempted": {
+          "0": 264,
+          "1": 656,
+          "2": 778,
+          "3": 401,
+          "4": 165,
+          "5": 46,
+          "6": 9
+        },
+        "accepted": {
+          "0": 264,
+          "1": 656,
+          "2": 699,
+          "3": 278,
+          "4": 87,
+          "5": 15,
+          "6": 1
+        }
+      },
+      "background_ordered_run_distribution": {
+        "attempted": {
+          "0": 2000,
+          "1": 299,
+          "2": 20
+        },
+        "accepted": {
+          "0": 2000
+        }
+      },
+      "unique_base_sequences": 2000,
+      "repeated_base_pairs": 0,
+      "at_most_one_pair_per_base_when_possible": true,
+      "candidate_storage_counts": {
+        "0": 996,
+        "1": 1004
+      },
+      "oracle_pair_accuracy": 1.0,
+      "invariant_checks": 2000,
+      "invariant_violations": 0,
+      "exact_representation_ties": {
+        "letter_counts": 2000,
+        "aggregated_lag_pair_counts": 2000,
+        "key_membership_mask": 2000,
+        "chain_occupancy": 2000,
+        "maximal_run_histogram": 2000,
+        "per_chain_unordered_bags": 2000,
+        "within_chain_depth_multisets": 2000,
+        "increasing_decreasing_edge_counts": 2000
+      },
+      "conditioning": "Held-out backgrounds are conditioned on not independently making the negative candidate compliant."
+    },
+    "strict_heldout_test": {
+      "attempted": 11457,
+      "accepted": 10000,
+      "rejected": 1457,
+      "rejection_rate": 0.12717116173518372,
+      "rejection_reasons": {
+        "negative_compliant_background": 1457
+      },
+      "background_key_count_distribution": {
+        "attempted": {
+          "0": 1393,
+          "1": 3388,
+          "2": 3529,
+          "3": 2095,
+          "4": 823,
+          "5": 189,
+          "6": 38,
+          "7": 2
+        },
+        "accepted": {
+          "0": 1393,
+          "1": 3388,
+          "2": 3147,
+          "3": 1540,
+          "4": 433,
+          "5": 86,
+          "6": 12,
+          "7": 1
+        }
+      },
+      "background_ordered_run_distribution": {
+        "attempted": {
+          "0": 10000,
+          "1": 1380,
+          "2": 77
+        },
+        "accepted": {
+          "0": 10000
+        }
+      },
+      "unique_base_sequences": 10000,
+      "repeated_base_pairs": 0,
+      "at_most_one_pair_per_base_when_possible": true,
+      "candidate_storage_counts": {
+        "0": 5032,
+        "1": 4968
+      },
+      "oracle_pair_accuracy": 1.0,
+      "invariant_checks": 10000,
+      "invariant_violations": 0,
+      "exact_representation_ties": {
+        "letter_counts": 10000,
+        "aggregated_lag_pair_counts": 10000,
+        "key_membership_mask": 10000,
+        "chain_occupancy": 10000,
+        "maximal_run_histogram": 10000,
+        "per_chain_unordered_bags": 10000,
+        "within_chain_depth_multisets": 10000,
+        "increasing_decreasing_edge_counts": 10000
+      },
+      "conditioning": "Held-out backgrounds are conditioned on not independently making the negative candidate compliant."
+    }
+  },
+  "legacy_control": {
+    "source_module": "src.oc_completion.gen_pairs",
+    "source_family": "two_hole",
+    "audit_name": "occupancy_changing_legacy",
+    "role": "legacy_control",
+    "primary_matched_test": false,
+    "warning": "The historical a,b,x two-hole family changes per-chain key occupancy and is not direct evidence of order learning."
+  },
+  "invariant_representations": [
+    "full 26-dimensional letter counts",
+    "full 26x26 aggregated directional lag-7 pair tensor",
+    "binary key-membership mask",
+    "per-chain key-count vector and sorted occupancy profile",
+    "maximal-run-length histogram",
+    "per-chain unordered letter multiset",
+    "letter multiset at each within-chain depth",
+    "counts of increasing and decreasing key-key edges"
+  ],
+  "generation_time_s": 14.434,
+  "classification_data_tag": "ocdet",
+  "source_files": {
+    "val": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit/splits/val.parquet",
+    "test": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit/splits/test.parquet"
+  },
+  "manifest_path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/strict_pair_manifest.parquet",
+  "rows": 24000,
+  "command": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/repro/src/oc_completion/strict_pairs.py --pair_seed 9700 --data_dir /fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_hole_audit --out_dir /fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit"
+}

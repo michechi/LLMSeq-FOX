@@ -1,0 +1,2 @@
+n_pairs,tie_tolerance,strict_win_rate,tie_rate,loss_rate,pair_accuracy,pair_accuracy_ci_lo,pair_accuracy_ci_hi,mean_margin,median_margin,flattened_candidate_auc,bootstrap_cluster,bootstrap_clusters,bootstrap_replicates,mean_duplicate_range,max_duplicate_range,n_jitter_candidates,n_repeats,model,noise_level,model_seed,checkpoint_epoch,split,background
+10000,0.0,0.7335,0.0067,0.2598,0.73685,0.7284475,0.745105,0.158938916015625,0.109375,0.7369048300000001,base_sequence_id,10000,1000,0.0,0.0,128,4,llama_lora,0.3,9950,5,test,heldout

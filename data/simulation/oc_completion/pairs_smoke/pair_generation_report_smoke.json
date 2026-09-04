@@ -1,0 +1,108 @@
+{
+  "mechanism": {
+    "task_family": "ordered_compliance",
+    "alphabet_size": 26,
+    "n_events": 20,
+    "key_letters": [
+      "W",
+      "D",
+      "Q",
+      "J",
+      "X",
+      "U"
+    ],
+    "kappa": {
+      "W": 0,
+      "D": 1,
+      "Q": 2,
+      "J": 3,
+      "X": 4,
+      "U": 5
+    },
+    "lag": 7,
+    "oracle": "rule_greedy_monotone_impl(tolerance=False, min_chain_length=2)",
+    "oracle_source": "src/analysis/mechanism_id/scripts/common.py"
+  },
+  "pair_seed": 9600,
+  "sizes": {
+    "val": 200,
+    "test": 500
+  },
+  "classification_data_tag": "ocdet_smoke",
+  "datasets": {
+    "two_hole_clean_val": {
+      "attempted": 200,
+      "accepted": 200,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "train_overlap_sequences": 0,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_completion/pairs_smoke/pairs_two_hole_clean_val_smoke.csv"
+    },
+    "two_hole_clean_test": {
+      "attempted": 500,
+      "accepted": 500,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "train_overlap_sequences": 0,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_completion/pairs_smoke/pairs_two_hole_clean_test_smoke.csv"
+    },
+    "two_hole_heldout_val": {
+      "attempted": 245,
+      "accepted": 200,
+      "rejection_rate": 0.1837,
+      "rejection_reasons": {
+        "negative_compliant_background": 45
+      },
+      "train_overlap_sequences": 0,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_completion/pairs_smoke/pairs_two_hole_heldout_val_smoke.csv"
+    },
+    "two_hole_heldout_test": {
+      "attempted": 633,
+      "accepted": 500,
+      "rejection_rate": 0.2101,
+      "rejection_reasons": {
+        "negative_compliant_background": 133
+      },
+      "train_overlap_sequences": 0,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_completion/pairs_smoke/pairs_two_hole_heldout_test_smoke.csv"
+    },
+    "one_hole_clean_val": {
+      "attempted": 200,
+      "accepted": 200,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "train_overlap_sequences": 0,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_completion/pairs_smoke/pairs_one_hole_clean_val_smoke.csv"
+    },
+    "one_hole_clean_test": {
+      "attempted": 500,
+      "accepted": 500,
+      "rejection_rate": 0.0,
+      "rejection_reasons": {},
+      "train_overlap_sequences": 0,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_completion/pairs_smoke/pairs_one_hole_clean_test_smoke.csv"
+    },
+    "one_hole_heldout_val": {
+      "attempted": 266,
+      "accepted": 200,
+      "rejection_rate": 0.2481,
+      "rejection_reasons": {
+        "negative_compliant_background": 66
+      },
+      "train_overlap_sequences": 0,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_completion/pairs_smoke/pairs_one_hole_heldout_val_smoke.csv"
+    },
+    "one_hole_heldout_test": {
+      "attempted": 674,
+      "accepted": 500,
+      "rejection_rate": 0.2582,
+      "rejection_reasons": {
+        "negative_compliant_background": 174
+      },
+      "train_overlap_sequences": 0,
+      "path": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/data/simulation/oc_completion/pairs_smoke/pairs_one_hole_heldout_test_smoke.csv"
+    }
+  },
+  "command": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/repro/src/oc_completion/gen_pairs.py --smoke",
+  "generation_time_s": 0.6
+}

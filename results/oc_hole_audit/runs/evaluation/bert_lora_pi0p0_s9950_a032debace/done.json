@@ -1,0 +1,26 @@
+{
+  "artifact_id": "bert_lora_pi0p0_s9950_a032debace",
+  "metadata": {
+    "arm": "bert_lora",
+    "checkpoint_epoch": 20,
+    "max_length": 64,
+    "model": "bert_lora",
+    "model_name": "bert-base-uncased",
+    "model_seed": 9950,
+    "noise_pi": 0.0,
+    "reload_max_abs_difference": 0.0,
+    "seed": 9950,
+    "validation_selected_threshold": 0.49999999999999994,
+    "validation_threshold": 0.49999999999999994
+  },
+  "outputs": {
+    "hole_position_metrics": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/runs/evaluation/bert_lora_pi0p0_s9950_a032debace/hole_position_metrics_test.csv",
+    "hole_repair_metrics": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/runs/evaluation/bert_lora_pi0p0_s9950_a032debace/hole_repair_metrics_test.csv",
+    "hole_stability_metrics": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/runs/evaluation/bert_lora_pi0p0_s9950_a032debace/hole_stability_metrics_test.csv",
+    "strict_metrics_clean": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/runs/evaluation/bert_lora_pi0p0_s9950_a032debace/strict_pair_metrics_clean_test.csv",
+    "strict_metrics_heldout": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/runs/evaluation/bert_lora_pi0p0_s9950_a032debace/strict_pair_metrics_heldout_test.csv",
+    "strict_predictions_clean": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/runs/evaluation/bert_lora_pi0p0_s9950_a032debace/strict_pair_predictions_clean_test.parquet",
+    "strict_predictions_heldout": "/fp/homes01/u01/ec-michelec/LLMSeq-FOX/results/oc_hole_audit/runs/evaluation/bert_lora_pi0p0_s9950_a032debace/strict_pair_predictions_heldout_test.parquet"
+  },
+  "status": "complete"
+}

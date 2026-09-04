@@ -1,0 +1,173 @@
+#!/bin/bash -l
+# One-job smoke test of the OC matched-completion pipeline on a FOX H200.
+#
+# Submit from the repository root.  meta-llama/Llama-3.2-1B is gated, so
+# accept its Hugging Face terms and export HF_TOKEN unless it is already in
+# HF_HUB_CACHE.
+#
+#   export OC_RUN_ROOT=/path/on/project/storage/oc_completion_smoke
+#   export HF_HOME=/path/on/project/storage/huggingface
+#   export HF_HUB_CACHE="$HF_HOME/hub"
+#   sbatch scripts/slurm/FOX/oc_completion_smoke_h200_native.slurm
+#
+# The job validates, in order:
+#   1. unit and invariant tests
+#   2. seeded smoke dataset and matched-pair generation
+#   3. bert_lora, llama_lora, and llama_full smoke training
+#   4. checkpoint-to-pair evaluation for llama_full
+#
+#SBATCH --job-name=oc_completion_smoke
+#SBATCH --account=ec12
+#SBATCH --time=02:00:00
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --partition=accel --gpus=nvidia_h200_nvl:1
+#SBATCH --mem-per-gpu=40G
+#SBATCH --cpus-per-task=8
+#SBATCH --output=logs/oc_completion_smoke_h200_native_%j.out
+
+set -o errexit
+set -o nounset
+set -o pipefail
+
+# ============== MODULES ==============
+module purge
+module use -a /fp/projects01/ec30/software/easybuild/modules/all/
+
+# Keep the entire environment on the H200-compatible 2024a/Python 3.12 stack.
+# nlpl-llmtools supplies PEFT and Accelerate; nlpl-nlptools does not.
+module load nlpl-pytorch/2.6.0-foss-2024a-cuda-12.6.0-Python-3.12.3
+module load nlpl-transformers/4.55.4-foss-2024a-Python-3.12.3
+module load nlpl-llmtools/01-foss-2024a-Python-3.12.3
+module load nlpl-datasets/3.6.0-foss-2024a-Python-3.12.3
+module load nlpl-scikit-bundle/1.6.1-foss-2024a-Python-3.12.3
+
+# ============== CONFIG ==============
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-$PWD}}"
+REPO_ROOT="$(realpath -e -- "$REPO_ROOT")"
+
+if [[ ! -d "$REPO_ROOT/repro/src/oc_completion" ]]; then
+    echo "ERROR: REPO_ROOT is not an LLMSeq checkout: $REPO_ROOT" >&2
+    echo "Submit this file from the LLMSeq-FOX repository root or export REPO_ROOT." >&2
+    exit 2
+fi
+
+OC_RUN_ROOT="${OC_RUN_ROOT:-$REPO_ROOT}"
+mkdir -p "$OC_RUN_ROOT"
+OC_RUN_ROOT="$(realpath -e -- "$OC_RUN_ROOT")"
+
+export DATA_DIR="$REPO_ROOT/data"
+export LLMSEQ_ROOT="$OC_RUN_ROOT"
+export HF_HOME="${HF_HOME:-$OC_RUN_ROOT/.cache/huggingface}"
+export HF_HUB_CACHE="${HF_HUB_CACHE:-$HF_HOME/hub}"
+
+export PYTHONHASHSEED=0
+export PYTHONUNBUFFERED=1
+export TOKENIZERS_PARALLELISM=false
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+export OMP_NUM_THREADS="$SLURM_CPUS_PER_TASK"
+
+mkdir -p \
+    "$DATA_DIR/simulation/oc_completion" \
+    "$HF_HUB_CACHE" \
+    "$OC_RUN_ROOT/checkpoints/oc_completion" \
+    "$OC_RUN_ROOT/results/matched_completion"
+
+echo "=== JOB CONFIGURATION ==="
+echo "Job: $SLURM_JOB_ID"
+echo "Node: $(hostname)"
+echo "Repository: $REPO_ROOT"
+echo "Data: $DATA_DIR"
+echo "Run outputs: $OC_RUN_ROOT"
+echo "Hugging Face cache: $HF_HUB_CACHE"
+echo "Arms: bert_lora llama_lora llama_full"
+module list 2>&1
+
+if [[ -z "${HF_TOKEN:-}" ]]; then
+    echo "WARNING: HF_TOKEN is unset; the Llama model must already be authenticated/cached." >&2
+fi
+
+python3 -u - <<'PY'
+import sys
+
+import accelerate
+import peft
+import pytest
+import torch
+import transformers
+
+if not torch.cuda.is_available():
+    raise SystemExit("ERROR: PyTorch cannot see the allocated H200")
+
+gpu = torch.cuda.get_device_properties(0)
+print(
+    f"Python {sys.version.split()[0]}  torch {torch.__version__}  "
+    f"transformers {transformers.__version__}  peft {peft.__version__}  "
+    f"accelerate {accelerate.__version__}  pytest {pytest.__version__}"
+)
+print(
+    f"CUDA available=True  device={gpu.name}  "
+    f"capability={gpu.major}.{gpu.minor}"
+)
+PY
+
+cd "$REPO_ROOT/repro"
+
+echo "=== 1. UNIT AND INVARIANT TESTS ==="
+python3 -u -m pytest tests/test_oc_completion.py -q
+
+echo "=== 2. SEEDED SMOKE DATA AND PAIRS ==="
+smoke_data_complete=true
+for task in ocdet ocnoisy; do
+    for split in train val test; do
+        [[ -f "$DATA_DIR/simulation/oc_completion/X_${split}_${task}_smoke.csv" ]] \
+            || smoke_data_complete=false
+        [[ -f "$DATA_DIR/simulation/oc_completion/y_${split}_${task}_smoke.csv" ]] \
+            || smoke_data_complete=false
+    done
+done
+if [[ "$smoke_data_complete" != true ]]; then
+    python3 -u -m src.oc_completion.gen_datasets \
+        --smoke --n_workers "$SLURM_CPUS_PER_TASK"
+fi
+
+smoke_pairs_complete=true
+for family in one_hole two_hole; do
+    for background in clean heldout; do
+        for split in val test; do
+            pair_file="$DATA_DIR/simulation/oc_completion/pairs_smoke/pairs_${family}_${background}_${split}_smoke.csv"
+            [[ -f "$pair_file" ]] || smoke_pairs_complete=false
+        done
+    done
+done
+if [[ "$smoke_pairs_complete" != true ]]; then
+    python3 -u -m src.oc_completion.gen_pairs --smoke
+fi
+
+echo "=== 3. SMOKE TRAINING ==="
+for ARM in bert_lora llama_lora llama_full; do
+    echo "--- $ARM"
+    python3 -u -m src.oc_completion.train_hf \
+        --arm "$ARM" \
+        --task ocdet \
+        --seed 9550 \
+        --smoke \
+        --resume \
+        --max_epochs 1 \
+        --max_train_rows 256 \
+        --diag_pairs 20 \
+        --eval_batch 128 \
+        --threads "$SLURM_CPUS_PER_TASK"
+done
+
+echo "=== 4. CHECKPOINT TO PAIR EVALUATION ==="
+python3 -u -m src.oc_completion.eval_pairs \
+    --model_kind hf \
+    --checkpoint "$OC_RUN_ROOT/checkpoints/oc_completion/oc_deterministic/llama_full/seed_9550_smoke/best.pt" \
+    --task ocdet \
+    --smoke \
+    --hf_batch_size 256 \
+    --threads "$SLURM_CPUS_PER_TASK"
+
+echo "=== OC COMPLETION SMOKE: ALL PASSED ==="
+echo "=== JOB FINISHED ==="
