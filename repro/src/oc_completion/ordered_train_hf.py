@@ -1,11 +1,16 @@
-"""Pretrained LoRA training for the Ordered Compliance hole audit.
+"""Generic pretrained-model training for the Ordered Compliance hole audit.
 
 The runner consumes the immutable parquet splits written by
 ``src.oc_completion.ordered_data`` and trains only on complete 20-letter
 sequences with ordinary binary labels.  Hole candidates and structural
 metadata never enter the training path.
 
-Two arms are intentionally supported:
+The historical ``bert_lora`` and ``llama_lora`` arms remain supported with
+their original defaults and directory layout.  A model can also be selected
+directly with ``--model-name``/``--model-kind`` and trained either with LoRA,
+full fine-tuning, or 4/8-bit QLoRA.
+
+The two historical arms are:
 
 ``bert_lora``
     ``bert-base-uncased`` with LoRA on query/key/value.
@@ -16,15 +21,17 @@ Two arms are intentionally supported:
     non-padding hidden state.  Training is classification-only cross entropy;
     no next-token labels, loss, or logits are used.
 
-Checkpoints contain only trainable adapter/classification-head tensors plus
-resume state.  The frozen pretrained backbone is always reconstructed from
-the recorded model identifier.
+Checkpoints contain only trainable tensors plus resume state.  Thus PEFT
+checkpoints never materialise or serialize the frozen pretrained backbone;
+it is reconstructed from the complete model recipe recorded alongside every
+checkpoint.
 """
 from __future__ import annotations
 
 import argparse
 import contextlib
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -95,6 +102,248 @@ LORA_DROPOUT = 0.1
 TOKEN_LENGTH_SHORT = 64
 TOKEN_LENGTH_LONG = 200
 
+DTYPE_NAMES: dict[str, torch.dtype] = {
+    "bf16": torch.bfloat16,
+    "fp16": torch.float16,
+    "fp32": torch.float32,
+}
+
+
+def _model_kind_to_prompt_kind(model_kind: str) -> str:
+    aliases = {
+        "bert": "bert",
+        "encoder": "bert",
+        "llama": "llama",
+        "decoder": "llama",
+    }
+    try:
+        return aliases[model_kind]
+    except KeyError as error:
+        raise ValueError(f"unsupported model kind {model_kind!r}") from error
+
+
+def _arm_model_kind(arm: str) -> str:
+    kind = MODEL_SPECS[arm]["kind"]
+    return "encoder" if kind == "bert" else "decoder"
+
+
+def _parse_lora_targets(value: str | Sequence[str] | None, model_kind: str) -> list[str]:
+    if value is None:
+        return (
+            ["query", "key", "value"]
+            if model_kind == "encoder"
+            else ["q_proj", "k_proj", "v_proj", "o_proj"]
+        )
+    values = value.split(",") if isinstance(value, str) else list(value)
+    targets = [str(target).strip() for target in values if str(target).strip()]
+    if not targets:
+        raise ValueError("LoRA target list must not be empty")
+    if len(set(targets)) != len(targets):
+        raise ValueError("LoRA target list contains duplicates")
+    return targets
+
+
+def _safe_model_tag(
+    model_name: str,
+    peft: bool,
+    quantization: str,
+    identity: Mapping[str, Any] | None = None,
+) -> str:
+    base = model_name.rstrip("/").rsplit("/", 1)[-1]
+    safe = "".join(
+        character if character.isalnum() or character in "._-" else "-"
+        for character in base
+    )
+    safe = (safe.strip(".-_") or "model")[:48]
+    tuning = "lora" if peft else "full"
+    encoded = json.dumps(identity or {}, sort_keys=True, separators=(",", ":")).encode()
+    fingerprint = hashlib.sha256(encoded).hexdigest()[:10]
+    return f"{safe}_{tuning}_{quantization}_{fingerprint}"
+
+
+def _resolve_dtype_name(value: str, device: torch.device) -> str:
+    if value != "auto":
+        return value
+    return "bf16" if device.type == "cuda" else "fp32"
+
+
+def _arm_recipe_is_overridden(args: argparse.Namespace) -> bool:
+    """Whether an arm invocation changes more than its output tag."""
+    return any(
+        (
+            getattr(args, "model_name", None) is not None,
+            getattr(args, "model_revision", None) is not None,
+            getattr(args, "tokenizer_name", None) is not None,
+            getattr(args, "tokenizer_revision", None) is not None,
+            getattr(args, "peft", True) is not True,
+            getattr(args, "quantization", "none") != "none",
+            getattr(args, "dtype", "auto") != "auto",
+            getattr(args, "compute_dtype", "auto") != "auto",
+            bool(getattr(args, "gradient_checkpointing", False)),
+            getattr(args, "lora_r", LORA_RANK) != LORA_RANK,
+            getattr(args, "lora_alpha", LORA_ALPHA) != LORA_ALPHA,
+            getattr(args, "lora_dropout", LORA_DROPOUT) != LORA_DROPOUT,
+            getattr(args, "lora_targets", None) is not None,
+            bool(getattr(args, "trust_remote_code", False)),
+            bool(getattr(args, "local_files_only", False)),
+        )
+    )
+
+
+def _validate_recipe(recipe: Mapping[str, Any], device: torch.device) -> None:
+    if recipe["model_kind"] not in ("encoder", "decoder"):
+        raise ValueError("model_kind must be encoder or decoder")
+    if recipe["quantization"] not in ("none", "8bit", "4bit"):
+        raise ValueError("quantization must be none, 8bit, or 4bit")
+    if recipe["quantization"] != "none":
+        if device.type != "cuda":
+            raise ValueError("4-bit and 8-bit training require CUDA")
+        if not recipe["peft"]:
+            raise ValueError("4-bit and 8-bit training require --peft")
+    if recipe["dtype"] not in DTYPE_NAMES or recipe["compute_dtype"] not in DTYPE_NAMES:
+        raise ValueError("unsupported dtype in model recipe")
+    if int(recipe["lora_r"]) <= 0 or int(recipe["lora_alpha"]) <= 0:
+        raise ValueError("LoRA rank and alpha must be positive")
+    if not 0.0 <= float(recipe["lora_dropout"]) < 1.0:
+        raise ValueError("LoRA dropout must be in [0, 1)")
+    tag = str(recipe["model_tag"])
+    if not tag or tag in (".", "..") or "/" in tag or "\\" in tag:
+        raise ValueError("model_tag must be one non-empty path component")
+
+
+def resolve_training_recipe(
+    args: argparse.Namespace,
+    device: torch.device,
+) -> dict[str, Any]:
+    """Resolve legacy or generic CLI arguments into a JSON-safe model recipe."""
+    arm = getattr(args, "arm", None)
+    if arm is not None:
+        spec = MODEL_SPECS[arm]
+        model_kind = _arm_model_kind(arm)
+        default_name = str(spec["model_name"])
+        legacy_defaults = not _arm_recipe_is_overridden(args)
+    else:
+        model_kind = getattr(args, "model_kind", None)
+        default_name = getattr(args, "model_name", None)
+        if not default_name or not model_kind:
+            raise ValueError("generic training requires --model-name and --model-kind")
+        legacy_defaults = False
+
+    model_name = getattr(args, "model_name", None) or default_name
+    requested_peft = getattr(args, "peft", None)
+    peft = True if requested_peft is None else bool(requested_peft)
+    quantization = getattr(args, "quantization", None) or "none"
+    dtype_name = _resolve_dtype_name(getattr(args, "dtype", "auto") or "auto", device)
+    compute_name = _resolve_dtype_name(
+        getattr(args, "compute_dtype", "auto") or "auto", device
+    )
+    targets = _parse_lora_targets(
+        getattr(args, "lora_targets", None), model_kind
+    )
+    model_tag = getattr(args, "model_tag", None)
+    tag_is_auto = model_tag is None and not legacy_defaults
+    tag_identity = {
+        "model_name": str(model_name),
+        "model_kind": str(model_kind),
+        "model_revision": getattr(args, "model_revision", None),
+        "tokenizer_name": getattr(args, "tokenizer_name", None),
+        "tokenizer_revision": getattr(args, "tokenizer_revision", None),
+        "peft": peft,
+        "quantization": quantization,
+        "dtype": dtype_name,
+        "compute_dtype": compute_name,
+        "gradient_checkpointing": bool(
+            getattr(args, "gradient_checkpointing", False)
+        ),
+        "lora_r": int(getattr(args, "lora_r", LORA_RANK)),
+        "lora_alpha": int(getattr(args, "lora_alpha", LORA_ALPHA)),
+        "lora_dropout": float(getattr(args, "lora_dropout", LORA_DROPOUT)),
+        "lora_targets": targets,
+    }
+    if model_tag is None:
+        model_tag = (
+            arm
+            if legacy_defaults
+            else _safe_model_tag(model_name, peft, quantization, tag_identity)
+        )
+    recipe = {
+        "schema_version": 2,
+        "legacy_arm": arm,
+        "legacy_defaults": legacy_defaults,
+        "model_name": str(model_name),
+        "model_kind": str(model_kind),
+        "model_tag": str(model_tag),
+        "model_tag_is_auto": tag_is_auto,
+        "model_revision": getattr(args, "model_revision", None),
+        "tokenizer_name": getattr(args, "tokenizer_name", None),
+        "tokenizer_revision": getattr(args, "tokenizer_revision", None),
+        "peft": peft,
+        "quantization": quantization,
+        "dtype": dtype_name,
+        "compute_dtype": compute_name,
+        "gradient_checkpointing": bool(
+            getattr(args, "gradient_checkpointing", False)
+        ),
+        "lora_r": int(getattr(args, "lora_r", LORA_RANK)),
+        "lora_alpha": int(getattr(args, "lora_alpha", LORA_ALPHA)),
+        "lora_dropout": float(getattr(args, "lora_dropout", LORA_DROPOUT)),
+        "lora_targets": targets,
+        "lora_bias": "none",
+        "lora_task_type": "SEQ_CLS" if model_kind == "encoder" else "FEATURE_EXTRACTION",
+        "trust_remote_code": bool(getattr(args, "trust_remote_code", False)),
+        "local_files_only": bool(getattr(args, "local_files_only", False)),
+    }
+    _validate_recipe(recipe, device)
+    return recipe
+
+
+def pin_remote_revisions(
+    recipe: Mapping[str, Any], cache_dir: Path
+) -> dict[str, Any]:
+    """Resolve mutable Hub revisions to immutable commit hashes before training."""
+    pinned = dict(recipe)
+    if bool(pinned.get("legacy_defaults", False)):
+        return pinned
+
+    from transformers import AutoConfig, AutoTokenizer
+
+    common = {
+        "cache_dir": str(cache_dir),
+        "trust_remote_code": bool(pinned.get("trust_remote_code", False)),
+        "local_files_only": bool(pinned.get("local_files_only", False)),
+    }
+    model_name = str(pinned["model_name"])
+    requested_model_revision = pinned.get("model_revision")
+    pinned["requested_model_revision"] = requested_model_revision
+    if not Path(model_name).expanduser().exists():
+        config = AutoConfig.from_pretrained(
+            model_name, revision=requested_model_revision, **common
+        )
+        commit_hash = getattr(config, "_commit_hash", None)
+        if not commit_hash:
+            raise RuntimeError(f"could not resolve an immutable revision for {model_name}")
+        pinned["model_revision"] = str(commit_hash)
+
+    tokenizer_name = pinned.get("tokenizer_name")
+    requested_tokenizer_revision = pinned.get("tokenizer_revision")
+    if tokenizer_name:
+        pinned["requested_tokenizer_revision"] = requested_tokenizer_revision
+    if tokenizer_name and str(tokenizer_name) != model_name:
+        if not Path(str(tokenizer_name)).expanduser().exists():
+            tokenizer = AutoTokenizer.from_pretrained(
+                str(tokenizer_name), revision=requested_tokenizer_revision, **common
+            )
+            tokenizer_commit = tokenizer.init_kwargs.get("_commit_hash")
+            if not tokenizer_commit:
+                raise RuntimeError(
+                    f"could not resolve an immutable tokenizer revision for {tokenizer_name}"
+                )
+            pinned["tokenizer_revision"] = str(tokenizer_commit)
+    else:
+        pinned["tokenizer_revision"] = pinned.get("model_revision")
+
+    return pinned
+
 
 def atomic_json_dump(value: Mapping[str, Any], path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -148,6 +397,7 @@ def _sequence_letters(sequence: str | Sequence[str]) -> tuple[str, ...]:
 
 def build_prompt(kind: str, sequence: str | Sequence[str]) -> str:
     """Create the complete-sequence BERT or exact causal prompt."""
+    kind = _model_kind_to_prompt_kind(kind)
     events = " ".join(_sequence_letters(sequence))
     if kind == "bert":
         return f"Sequential events: {events}"
@@ -310,15 +560,29 @@ def build_tokenizer(
     model_name: str,
     cache_dir: Path,
     tokenizer_path: Path | None = None,
+    *,
+    recipe: Mapping[str, Any] | None = None,
 ) -> Any:
     from transformers import AutoTokenizer
 
     source = (
         str(tokenizer_path)
         if tokenizer_path is not None and tokenizer_path.exists()
-        else model_name
+        else str(recipe.get("tokenizer_name") or model_name) if recipe else model_name
     )
-    tokenizer = AutoTokenizer.from_pretrained(source, cache_dir=str(cache_dir))
+    load_kwargs: dict[str, Any] = {"cache_dir": str(cache_dir)}
+    if recipe is not None and not bool(recipe.get("legacy_defaults", False)):
+        revision = (
+            recipe.get("tokenizer_revision")
+            if recipe.get("tokenizer_name")
+            else recipe.get("model_revision")
+        )
+        load_kwargs.update(
+            revision=revision,
+            trust_remote_code=bool(recipe.get("trust_remote_code", False)),
+            local_files_only=bool(recipe.get("local_files_only", False)),
+        )
+    tokenizer = AutoTokenizer.from_pretrained(source, **load_kwargs)
     tokenizer.padding_side = "right"
     if tokenizer.pad_token_id is None:
         if tokenizer.eos_token_id is None:
@@ -328,7 +592,7 @@ def build_tokenizer(
 
 
 class LlamaSequenceClassifier(nn.Module):
-    """LoRA backbone plus the current MLP head on final non-padding state."""
+    """Decoder backbone plus the current MLP head on final non-padding state."""
 
     def __init__(self, backbone: nn.Module, num_labels: int = 2):
         super().__init__()
@@ -362,42 +626,171 @@ def build_hf_model(
     dtype: torch.dtype,
     cache_dir: Path,
     model_name: str | None = None,
+    *,
+    recipe: Mapping[str, Any] | None = None,
 ) -> nn.Module:
-    """Reconstruct a frozen pretrained backbone with the exact LoRA recipe."""
-    from peft import LoraConfig, get_peft_model
+    """Reconstruct a pretrained model from a complete legacy or v2 recipe."""
+    if recipe is None:
+        if arm not in MODEL_SPECS:
+            raise ValueError("a model recipe is required for a generic model")
+        spec = MODEL_SPECS[arm]
+        resolved_recipe: dict[str, Any] = {
+            "model_name": model_name or spec["model_name"],
+            "model_kind": _arm_model_kind(arm),
+            "model_tag": arm,
+            "model_tag_is_auto": False,
+            "model_revision": None,
+            "tokenizer_name": None,
+            "tokenizer_revision": None,
+            "peft": True,
+            "quantization": "none",
+            "dtype": "bf16" if dtype == torch.bfloat16 else "fp32",
+            "compute_dtype": "bf16" if dtype == torch.bfloat16 else "fp32",
+            "gradient_checkpointing": False,
+            "lora_r": LORA_RANK,
+            "lora_alpha": LORA_ALPHA,
+            "lora_dropout": LORA_DROPOUT,
+            "lora_targets": list(spec["lora_targets"]),
+            "lora_bias": "none",
+            "lora_task_type": spec["lora_task_type"],
+            "trust_remote_code": False,
+            "local_files_only": False,
+            "legacy_arm": arm,
+            "legacy_defaults": True,
+        }
+    else:
+        resolved_recipe = dict(recipe)
 
-    spec = MODEL_SPECS[arm]
-    resolved_name = model_name or spec["model_name"]
-    lora = LoraConfig(
-        r=LORA_RANK,
-        lora_alpha=LORA_ALPHA,
-        lora_dropout=LORA_DROPOUT,
-        target_modules=list(spec["lora_targets"]),
-        bias="none",
-        task_type=spec["lora_task_type"],
+    resolved_name = str(resolved_recipe["model_name"])
+    model_kind = str(resolved_recipe["model_kind"])
+    quantization = str(resolved_recipe.get("quantization", "none"))
+    peft_enabled = bool(resolved_recipe.get("peft", True))
+    if quantization != "none" and device.type != "cuda":
+        raise ValueError("4-bit and 8-bit model loading requires CUDA")
+    if quantization != "none" and not peft_enabled:
+        raise ValueError("4-bit and 8-bit model loading requires PEFT")
+    model_dtype = DTYPE_NAMES[str(resolved_recipe.get("dtype", "fp32"))]
+    compute_dtype = DTYPE_NAMES[
+        str(resolved_recipe.get("compute_dtype", resolved_recipe.get("dtype", "fp32")))
+    ]
+    parameter_dtype = (
+        torch.float32
+        if quantization == "none" and not peft_enabled
+        else model_dtype
     )
-    if spec["kind"] == "bert":
+    load_kwargs: dict[str, Any] = {"cache_dir": str(cache_dir)}
+    if not bool(resolved_recipe.get("legacy_defaults", False)):
+        load_kwargs.update(
+            revision=resolved_recipe.get("model_revision"),
+            trust_remote_code=bool(resolved_recipe.get("trust_remote_code", False)),
+            local_files_only=bool(resolved_recipe.get("local_files_only", False)),
+        )
+    # Keep the historical BERT arm's FP32 load exact. PEFT backbones use the
+    # requested storage dtype; full fine-tuning keeps FP32 trainable parameters
+    # and uses compute_dtype for mixed-precision autocast.
+    if not (
+        resolved_recipe.get("legacy_arm") == "bert_lora"
+        and resolved_recipe.get("legacy_defaults", True)
+        and quantization == "none"
+    ):
+        load_kwargs["torch_dtype"] = parameter_dtype
+    if quantization != "none":
+        if importlib.util.find_spec("bitsandbytes") is None:
+            raise RuntimeError(
+                "quantized training requires bitsandbytes; install it in the training environment"
+            )
+        if importlib.util.find_spec("accelerate") is None:
+            raise RuntimeError(
+                "quantized device placement requires the accelerate package"
+            )
+        try:
+            from transformers import BitsAndBytesConfig
+        except ImportError as error:
+            raise RuntimeError(
+                "quantized loading requires a Transformers build with bitsandbytes support"
+            ) from error
+
+        if quantization == "4bit":
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_compute_dtype=compute_dtype,
+            )
+        else:
+            load_kwargs["quantization_config"] = BitsAndBytesConfig(load_in_8bit=True)
+        device_index = (
+            device.index if device.index is not None else torch.cuda.current_device()
+        )
+        load_kwargs["device_map"] = {"": device_index}
+
+    if model_kind == "encoder":
         from transformers import AutoModelForSequenceClassification
 
         backbone = AutoModelForSequenceClassification.from_pretrained(
-            resolved_name,
-            num_labels=2,
-            cache_dir=str(cache_dir),
+            resolved_name, num_labels=2, **load_kwargs
         )
-        model = get_peft_model(backbone, lora)
     else:
         from transformers import AutoModel
 
-        backbone = AutoModel.from_pretrained(
-            resolved_name,
-            torch_dtype=dtype,
-            cache_dir=str(cache_dir),
-        )
+        backbone = AutoModel.from_pretrained(resolved_name, **load_kwargs)
         backbone.config.pad_token_id = tokenizer.pad_token_id
-        adapted = get_peft_model(backbone, lora)
-        model = LlamaSequenceClassifier(adapted)
-        model.classification_head.to(dtype=dtype)
-    return model.to(device)
+        if hasattr(backbone.config, "use_cache"):
+            backbone.config.use_cache = not bool(
+                resolved_recipe.get("gradient_checkpointing", False)
+            )
+
+    gradient_checkpointing = bool(
+        resolved_recipe.get("gradient_checkpointing", False)
+    )
+    if gradient_checkpointing and not hasattr(backbone, "gradient_checkpointing_enable"):
+        raise ValueError(
+            f"{resolved_name} does not expose Transformers gradient checkpointing"
+        )
+    if quantization != "none":
+        try:
+            from peft import prepare_model_for_kbit_training
+        except ImportError as error:
+            raise RuntimeError("quantized training requires the peft package") from error
+
+        backbone = prepare_model_for_kbit_training(
+            backbone,
+            use_gradient_checkpointing=gradient_checkpointing,
+        )
+    elif gradient_checkpointing:
+        backbone.gradient_checkpointing_enable()
+        if peft_enabled and hasattr(backbone, "enable_input_require_grads"):
+            backbone.enable_input_require_grads()
+
+    if peft_enabled:
+        try:
+            from peft import LoraConfig, get_peft_model
+        except ImportError as error:
+            raise RuntimeError("--peft requires the peft package") from error
+
+        lora = LoraConfig(
+            r=int(resolved_recipe["lora_r"]),
+            lora_alpha=int(resolved_recipe["lora_alpha"]),
+            lora_dropout=float(resolved_recipe["lora_dropout"]),
+            target_modules=list(resolved_recipe["lora_targets"]),
+            bias=str(resolved_recipe.get("lora_bias", "none")),
+            task_type=str(resolved_recipe["lora_task_type"]),
+        )
+        backbone = get_peft_model(backbone, lora)
+
+    if model_kind == "encoder":
+        model = backbone
+    else:
+        model = LlamaSequenceClassifier(backbone)
+        head_dtype = compute_dtype if quantization != "none" else parameter_dtype
+        model.classification_head.to(device=device, dtype=head_dtype)
+
+    # Calling .to() on a bitsandbytes-quantized model is unsupported.  Its
+    # backbone was placed by device_map and the decoder head above was placed
+    # explicitly.  Non-quantized models retain the historical whole-model move.
+    if quantization == "none":
+        model = model.to(device)
+    return model
 
 
 def model_logits(
@@ -406,7 +799,8 @@ def model_logits(
     input_ids: torch.Tensor,
     attention_mask: torch.Tensor,
 ) -> torch.Tensor:
-    if MODEL_SPECS[arm]["kind"] == "bert":
+    kind = MODEL_SPECS[arm]["kind"] if arm in MODEL_SPECS else arm
+    if _model_kind_to_prompt_kind(kind) == "bert":
         return model(input_ids=input_ids, attention_mask=attention_mask).logits
     return model(input_ids=input_ids, attention_mask=attention_mask)
 
@@ -423,7 +817,9 @@ class PromptDataset(Dataset):
         tokenizer: Any,
         max_length: int,
     ):
-        self.kind = MODEL_SPECS[arm]["kind"]
+        self.kind = (
+            MODEL_SPECS[arm]["kind"] if arm in MODEL_SPECS else _model_kind_to_prompt_kind(arm)
+        )
         self.sequences = list(sequences)
         self.observed_labels = np.asarray(observed_labels, dtype=np.int64)
         self.latent_labels = np.asarray(latent_labels, dtype=np.int64)
@@ -459,9 +855,9 @@ def _safe_auc(labels: np.ndarray, scores: np.ndarray) -> float:
     return float(roc_auc_score(labels, scores)) if np.unique(labels).size > 1 else 0.5
 
 
-def autocast_context(device: torch.device):
-    if device.type == "cuda":
-        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+def autocast_context(device: torch.device, dtype: torch.dtype = torch.bfloat16):
+    if device.type == "cuda" and dtype in (torch.bfloat16, torch.float16):
+        return torch.autocast(device_type="cuda", dtype=dtype)
     return contextlib.nullcontext()
 
 
@@ -471,6 +867,7 @@ def evaluate_model(
     model: nn.Module,
     loader: DataLoader,
     device: torch.device,
+    compute_dtype: torch.dtype = torch.bfloat16,
 ) -> dict[str, Any]:
     model.eval()
     total_loss = 0.0
@@ -482,7 +879,7 @@ def evaluate_model(
         input_ids = batch["input_ids"].to(device, non_blocking=True)
         attention_mask = batch["attention_mask"].to(device, non_blocking=True)
         labels = batch["labels"].to(device, non_blocking=True)
-        with autocast_context(device):
+        with autocast_context(device, compute_dtype):
             logits = model_logits(arm, model, input_ids, attention_mask)
             loss = nn.functional.cross_entropy(logits.float(), labels)
         batch_size = labels.shape[0]
@@ -563,26 +960,37 @@ def linear_warmup_decay_scheduler(
 
 
 def trainable_state_dict(model: nn.Module) -> dict[str, torch.Tensor]:
-    """Extract adapter/head tensors without any frozen backbone tensor."""
-    state = model.state_dict()
-    trainable_names = {
-        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    """Extract trainable tensors without constructing a full model state dict."""
+    return {
+        name: parameter.detach().cpu().clone()
+        for name, parameter in sorted(model.named_parameters())
+        if parameter.requires_grad
     }
-    missing = trainable_names - set(state)
-    if missing:
-        raise KeyError(f"trainable parameters absent from state_dict: {sorted(missing)[:3]}")
-    return {name: state[name].detach().cpu().clone() for name in sorted(trainable_names)}
 
 
 def load_trainable_state_dict(model: nn.Module, state: Mapping[str, torch.Tensor]) -> None:
-    current = model.state_dict()
-    unexpected = set(state) - set(current)
+    """Load trainable tensors directly, without materialising frozen tensors."""
+    parameters = dict(model.named_parameters())
+    unexpected = set(state) - set(parameters)
     if unexpected:
         raise KeyError(
             f"checkpoint contains unexpected trainable tensors: {sorted(unexpected)[:3]}"
         )
-    current.update({name: tensor for name, tensor in state.items()})
-    model.load_state_dict(current, strict=True)
+    expected = {
+        name for name, parameter in parameters.items() if parameter.requires_grad
+    }
+    missing = expected - set(state)
+    if missing:
+        raise KeyError(f"checkpoint is missing trainable tensors: {sorted(missing)[:3]}")
+    with torch.no_grad():
+        for name, tensor in state.items():
+            parameter = parameters[name]
+            if tuple(parameter.shape) != tuple(tensor.shape):
+                raise ValueError(
+                    f"shape mismatch for {name}: {tuple(tensor.shape)} != "
+                    f"{tuple(parameter.shape)}"
+                )
+            parameter.copy_(tensor.to(device=parameter.device, dtype=parameter.dtype))
 
 
 def capture_rng_state(loader_generator: torch.Generator) -> dict[str, Any]:
@@ -620,10 +1028,16 @@ def checkpoint_payload(
     max_length: int,
     history: Sequence[Mapping[str, Any]],
     reload_probe: Mapping[str, Any],
+    recipe: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return {
-        "schema_version": 1,
-        "state_format": "lora_adapter_and_classification_head_only",
+    peft_enabled = True if recipe is None else bool(recipe.get("peft", True))
+    payload = {
+        "schema_version": 1 if recipe is None else 2,
+        "state_format": (
+            "lora_adapter_and_classification_head_only"
+            if peft_enabled
+            else "all_trainable_parameters"
+        ),
         "adapter_and_head_state_dict": trainable_state_dict(model),
         "trainable_parameter_names": sorted(
             name for name, parameter in model.named_parameters() if parameter.requires_grad
@@ -647,6 +1061,9 @@ def checkpoint_payload(
         "selection_criterion": "standard observed-label validation loss",
         "reload_probe": dict(reload_probe),
     }
+    if recipe is not None:
+        payload["model_recipe"] = dict(recipe)
+    return payload
 
 
 class HFScorer:
@@ -660,14 +1077,24 @@ class HFScorer:
         max_length: int,
         device: torch.device,
         batch_size: int = 64,
+        *,
+        model_kind: str | None = None,
+        compute_dtype: torch.dtype = torch.bfloat16,
     ):
         self.arm = arm
-        self.kind = MODEL_SPECS[arm]["kind"]
+        resolved_kind = (
+            MODEL_SPECS[arm]["kind"]
+            if arm in MODEL_SPECS
+            else model_kind or arm
+        )
+        self.kind = _model_kind_to_prompt_kind(resolved_kind)
+        self.model_kind = "encoder" if self.kind == "bert" else "decoder"
         self.model = model
         self.tokenizer = tokenizer
         self.max_length = int(max_length)
         self.device = device
         self.batch_size = int(batch_size)
+        self.compute_dtype = compute_dtype
 
     @torch.no_grad()
     def __call__(self, sequences: Sequence[str]) -> np.ndarray:
@@ -687,8 +1114,8 @@ class HFScorer:
             )
             input_ids = encoded["input_ids"].to(self.device)
             attention_mask = encoded["attention_mask"].to(self.device)
-            with autocast_context(self.device):
-                logits = model_logits(self.arm, self.model, input_ids, attention_mask)
+            with autocast_context(self.device, self.compute_dtype):
+                logits = model_logits(self.model_kind, self.model, input_ids, attention_mask)
             outputs.append(logits.float().cpu().numpy())
         if not outputs:
             return np.empty((0, 2), dtype=np.float32)
@@ -737,11 +1164,51 @@ def _checkpoint_path(checkpoint_or_run_dir: Path | str) -> tuple[Path, Path]:
     return candidate, run_dir
 
 
+def _legacy_recipe_from_config(
+    config: Mapping[str, Any],
+    checkpoint: Mapping[str, Any],
+    device: torch.device,
+) -> dict[str, Any]:
+    """Upgrade a schema-v1 arm checkpoint in memory for generic reloading."""
+    arm = str(checkpoint["arm"])
+    spec = MODEL_SPECS[arm]
+    dtype_name = "bf16" if device.type == "cuda" else "fp32"
+    lora = checkpoint.get("lora", config.get("lora", {}))
+    return {
+        "schema_version": 1,
+        "legacy_arm": arm,
+        "legacy_defaults": True,
+        "model_name": str(
+            config.get("model_name", checkpoint.get("model_name", spec["model_name"]))
+        ),
+        "model_kind": _arm_model_kind(arm),
+        "model_tag": arm,
+        "model_tag_is_auto": False,
+        "model_revision": None,
+        "tokenizer_name": None,
+        "tokenizer_revision": None,
+        "peft": True,
+        "quantization": "none",
+        "dtype": dtype_name,
+        "compute_dtype": dtype_name,
+        "gradient_checkpointing": False,
+        "lora_r": int(lora.get("rank", LORA_RANK)),
+        "lora_alpha": int(lora.get("alpha", LORA_ALPHA)),
+        "lora_dropout": float(lora.get("dropout", LORA_DROPOUT)),
+        "lora_targets": list(lora.get("targets", spec["lora_targets"])),
+        "lora_bias": str(lora.get("bias", "none")),
+        "lora_task_type": str(spec["lora_task_type"]),
+        "trust_remote_code": False,
+        "local_files_only": False,
+    }
+
+
 def load_hf_scorer(
     checkpoint_or_run_dir: Path | str,
     device: str | torch.device | None = None,
     batch_size: int = 64,
     verify_reload: bool = True,
+    cache_dir: Path | str | None = None,
 ) -> tuple[HFScorer, dict[str, Any]]:
     """Rebuild the frozen backbone and load an adapter/head-only checkpoint."""
     checkpoint_path, run_dir = _checkpoint_path(checkpoint_or_run_dir)
@@ -752,21 +1219,42 @@ def load_hf_scorer(
         resolved_device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     else:
         resolved_device = torch.device(device)
-    dtype = torch.bfloat16 if resolved_device.type == "cuda" else torch.float32
-    cache_dir = Path(config.get("hf_cache", DEFAULT_HF_CACHE))
+    stored_recipe = checkpoint.get("model_recipe") or config.get("model_recipe")
+    if (
+        checkpoint.get("model_recipe") is not None
+        and config.get("model_recipe") is not None
+        and checkpoint["model_recipe"] != config["model_recipe"]
+    ):
+        raise ValueError("checkpoint model recipe does not match config.json")
+    recipe = (
+        dict(stored_recipe)
+        if stored_recipe is not None
+        else _legacy_recipe_from_config(config, checkpoint, resolved_device)
+    )
+    _validate_recipe(recipe, resolved_device)
+    dtype = DTYPE_NAMES[str(recipe["dtype"])]
+    compute_dtype = DTYPE_NAMES[str(recipe["compute_dtype"])]
+    environment_cache = os.environ.get("HF_HUB_CACHE")
+    if environment_cache is None and os.environ.get("HF_HOME"):
+        environment_cache = str(Path(os.environ["HF_HOME"]) / "hub")
+    resolved_cache_dir = Path(
+        cache_dir or environment_cache or config.get("hf_cache", DEFAULT_HF_CACHE)
+    )
     tokenizer = build_tokenizer(
         arm,
-        config["model_name"],
-        cache_dir,
+        recipe["model_name"],
+        resolved_cache_dir,
         tokenizer_path=run_dir / "tokenizer",
+        recipe=recipe,
     )
     model = build_hf_model(
         arm,
         tokenizer,
         resolved_device,
         dtype,
-        cache_dir,
-        model_name=config["model_name"],
+        resolved_cache_dir,
+        model_name=recipe["model_name"],
+        recipe=recipe,
     )
     load_trainable_state_dict(model, checkpoint["adapter_and_head_state_dict"])
     scorer = HFScorer(
@@ -776,6 +1264,8 @@ def load_hf_scorer(
         checkpoint["max_length"],
         resolved_device,
         batch_size,
+        model_kind=recipe["model_kind"],
+        compute_dtype=compute_dtype,
     )
     reload_difference = None
     if verify_reload and checkpoint.get("reload_probe"):
@@ -785,7 +1275,12 @@ def load_hf_scorer(
     metadata = {
         "model": arm,
         "arm": arm,
-        "model_name": config["model_name"],
+        "model_name": recipe["model_name"],
+        "model_tag": recipe["model_tag"],
+        "model_kind": recipe["model_kind"],
+        "peft": recipe["peft"],
+        "quantization": recipe["quantization"],
+        "model_recipe": recipe,
         "noise_pi": checkpoint["noise_pi"],
         "model_seed": checkpoint["model_seed"],
         "checkpoint_epoch": checkpoint["current_epoch"],
@@ -840,6 +1335,67 @@ def _valid_done(run_dir: Path) -> bool:
     )
 
 
+def _requested_recipe_matches_stored(
+    requested: Mapping[str, Any], stored: Mapping[str, Any]
+) -> bool:
+    """Compare a CLI recipe with a stored recipe whose Hub revisions are pinned."""
+    comparable = dict(stored)
+    comparable["model_revision"] = comparable.pop(
+        "requested_model_revision", comparable.get("model_revision")
+    )
+    if comparable.get("tokenizer_name"):
+        comparable["tokenizer_revision"] = comparable.pop(
+            "requested_tokenizer_revision", comparable.get("tokenizer_revision")
+        )
+    else:
+        comparable.pop("requested_tokenizer_revision", None)
+        comparable["tokenizer_revision"] = requested.get("tokenizer_revision")
+    return comparable == dict(requested)
+
+
+def _validate_resume_configuration(
+    config_path: Path,
+    stored: Mapping[str, Any],
+    *,
+    recipe: Mapping[str, Any],
+    noise_pi: float,
+    model_seed: int,
+    data_fingerprint: str,
+    micro_batch: int,
+    accumulation: int,
+    eval_batch: int,
+    max_epochs: int,
+    patience: int,
+    max_train_rows: int,
+    smoke: bool,
+) -> None:
+    """Refuse to reuse a run directory for a different experiment."""
+    expected = {
+        "model_recipe": dict(recipe),
+        "noise_pi": float(noise_pi),
+        "model_seed": int(model_seed),
+        "data_fingerprint": data_fingerprint,
+        "micro_batch_size": int(micro_batch),
+        "gradient_accumulation": int(accumulation),
+        "eval_batch_size": int(eval_batch),
+        "maximum_epochs": int(max_epochs),
+        "early_stopping_patience": int(patience),
+        "max_train_rows": int(max_train_rows),
+        "smoke": bool(smoke),
+    }
+    mismatches = {
+        key: {"stored": stored.get(key), "requested": value}
+        for key, value in expected.items()
+        if stored.get(key) != value
+    }
+    if mismatches:
+        details = ", ".join(
+            f"{key}={values['stored']!r} (requested {values['requested']!r})"
+            for key, values in mismatches.items()
+        )
+        raise ValueError(f"resume configuration does not match {config_path}: {details}")
+
+
 def _load_or_create_audit(
     run_dir: Path,
     tokenizer: Any,
@@ -849,6 +1405,8 @@ def _load_or_create_audit(
     data_fingerprint: str,
     audit_batch_size: int,
     resume: bool,
+    *,
+    model_kind: str | None = None,
 ) -> dict[str, Any]:
     path = run_dir / "tokenization_audit.json"
     if resume and path.exists():
@@ -864,7 +1422,7 @@ def _load_or_create_audit(
             return audit
     audit = audit_tokenization(
         tokenizer,
-        MODEL_SPECS[arm]["kind"],
+        MODEL_SPECS[arm]["kind"] if arm in MODEL_SPECS else model_kind or arm,
         {split: split_frames[split]["X"].astype(str).tolist() for split in split_frames},
         model_name,
         data_fingerprint,
@@ -937,49 +1495,114 @@ def _make_loaders(
 def train(args: argparse.Namespace) -> dict[str, Any]:
     if float(args.pi) not in NOISE_LEVELS:
         raise ValueError(f"pi must be one of {NOISE_LEVELS}")
-    spec = MODEL_SPECS[args.arm]
-    micro_batch = args.micro_batch or int(spec["micro_batch"])
-    accumulation = args.gradient_accumulation or int(spec["gradient_accumulation"])
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    requested_recipe = resolve_training_recipe(args, device)
+    legacy_spec = MODEL_SPECS.get(args.arm) if args.arm is not None else None
+    default_micro_batch = (
+        int(legacy_spec["micro_batch"])
+        if legacy_spec is not None
+        else 16 if requested_recipe["model_kind"] == "encoder" else 1
+    )
+    default_accumulation = (
+        int(legacy_spec["gradient_accumulation"])
+        if legacy_spec is not None
+        else EFFECTIVE_BATCH_SIZE // default_micro_batch
+    )
+    micro_batch = args.micro_batch or default_micro_batch
+    accumulation = args.gradient_accumulation or default_accumulation
+    eval_batch = args.eval_batch or (
+        64
+        if legacy_spec is not None or requested_recipe["model_kind"] == "encoder"
+        else 2
+    )
     if micro_batch * accumulation != EFFECTIVE_BATCH_SIZE:
         raise ValueError(
             f"micro_batch * gradient_accumulation must equal {EFFECTIVE_BATCH_SIZE}"
         )
     suffix = "_smoke" if args.smoke else ""
+    run_identity = (
+        args.arm
+        if args.arm is not None
+        and requested_recipe["legacy_defaults"]
+        and getattr(args, "model_tag", None) is None
+        else requested_recipe["model_tag"]
+    )
     run_dir = args.run_dir or (
         args.checkpoint_root
-        / args.arm
+        / run_identity
         / f"pi_{pi_tag(args.pi)}"
         / f"seed_{args.model_seed}{suffix}"
     )
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "epochs").mkdir(exist_ok=True)
+    config_path = run_dir / "config.json"
+    data_fingerprint = _data_fingerprint(args.data_root)
+    stored_config: dict[str, Any] | None = None
+    if args.resume and config_path.exists():
+        stored_config = json.loads(config_path.read_text(encoding="utf-8"))
+        stored_recipe = stored_config.get("model_recipe")
+        if stored_recipe is not None:
+            if not _requested_recipe_matches_stored(requested_recipe, stored_recipe):
+                raise ValueError(f"resume model recipe does not match {config_path}")
+            recipe = dict(stored_recipe)
+        else:
+            recipe = requested_recipe
+    else:
+        if config_path.exists():
+            raise FileExistsError(
+                f"refusing to overwrite existing run {run_dir}; use --resume or a new run"
+            )
+        recipe = pin_remote_revisions(requested_recipe, args.hf_cache)
+    if stored_config is not None and stored_config.get("model_recipe") is not None:
+        _validate_resume_configuration(
+            config_path,
+            stored_config,
+            recipe=recipe,
+            noise_pi=args.pi,
+            model_seed=args.model_seed,
+            data_fingerprint=data_fingerprint,
+            micro_batch=micro_batch,
+            accumulation=accumulation,
+            eval_batch=eval_batch,
+            max_epochs=args.max_epochs,
+            patience=args.patience,
+            max_train_rows=args.max_train_rows,
+            smoke=args.smoke,
+        )
     if args.resume and _valid_done(run_dir):
         print(f"[ordered_train_hf] valid done.json found; skipping {run_dir}", flush=True)
         return json.loads((run_dir / "done.json").read_text(encoding="utf-8"))
 
     set_model_seed(args.model_seed)
     torch.set_num_threads(args.threads)
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+    dtype = DTYPE_NAMES[recipe["dtype"]]
+    compute_dtype = DTYPE_NAMES[recipe["compute_dtype"]]
+    runtime_arm = run_identity
+    dataset_kind = args.arm or recipe["model_kind"]
     frames = {
         split: load_split(args.data_root, split, args.pi)
         for split in ("train", "val", "test")
     }
     audit_frames = {split: frame for split, frame in frames.items()}
-    data_fingerprint = _data_fingerprint(args.data_root)
     data_metadata = _data_manifest_metadata(args.data_root)
 
-    tokenizer = build_tokenizer(args.arm, spec["model_name"], args.hf_cache)
+    tokenizer = build_tokenizer(
+        runtime_arm,
+        recipe["model_name"],
+        args.hf_cache,
+        recipe=recipe,
+    )
     audit = _load_or_create_audit(
         run_dir,
         tokenizer,
-        args.arm,
-        spec["model_name"],
+        runtime_arm,
+        recipe["model_name"],
         audit_frames,
         data_fingerprint,
         args.audit_batch_size,
         args.resume,
+        model_kind=recipe["model_kind"],
     )
     max_length = int(audit["selected_max_length"])
     if max_length not in (TOKEN_LENGTH_SHORT, TOKEN_LENGTH_LONG):
@@ -989,12 +1612,13 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         frames["train"] = frames["train"].iloc[: args.max_train_rows].reset_index(drop=True)
 
     model = build_hf_model(
-        args.arm,
+        runtime_arm,
         tokenizer,
         device,
         dtype,
         args.hf_cache,
-        model_name=spec["model_name"],
+        model_name=recipe["model_name"],
+        recipe=recipe,
     )
     trainable_parameters = [
         parameter for parameter in model.parameters() if parameter.requires_grad
@@ -1002,12 +1626,12 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     if not trainable_parameters:
         raise AssertionError("LoRA model has no trainable parameters")
     loaders, loader_generator = _make_loaders(
-        args.arm,
+        dataset_kind,
         frames,
         tokenizer,
         max_length,
         micro_batch,
-        args.eval_batch,
+        eval_batch,
         args.workers,
         args.model_seed,
         device,
@@ -1017,9 +1641,10 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     total_updates = updates_per_epoch * args.max_epochs
     warmup_updates = int(WARMUP_RATIO * total_updates)
     scheduler = linear_warmup_decay_scheduler(optimizer, warmup_updates, total_updates)
-    # BF16 does not require loss scaling.  Keep the explicit field in every
-    # resume checkpoint so FP16 variants cannot silently omit scaler state.
-    scaler = torch.amp.GradScaler("cuda", enabled=False)
+    # BF16 does not require loss scaling; FP16 does.
+    scaler = torch.amp.GradScaler(
+        "cuda", enabled=device.type == "cuda" and compute_dtype == torch.float16
+    )
     stopper = EarlyStopping(args.patience)
     history: list[dict[str, Any]] = []
     best_epoch = 0
@@ -1030,7 +1655,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     if args.resume and last_path.exists():
         checkpoint = torch.load(last_path, map_location="cpu", weights_only=False)
         expected = {
-            "arm": args.arm,
+            "arm": runtime_arm,
             "noise_pi": float(args.pi),
             "model_seed": int(args.model_seed),
             "max_length": max_length,
@@ -1040,6 +1665,8 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             "gradient_accumulation": int(accumulation),
             "data_fingerprint": data_fingerprint,
         }
+        if checkpoint.get("model_recipe") is not None:
+            expected["model_recipe"] = recipe
         for key, value in expected.items():
             if checkpoint.get(key) != value:
                 raise ValueError(
@@ -1059,10 +1686,14 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         prior_training_seconds = float(checkpoint.get("training_seconds", 0.0))
 
     configuration = {
-        "schema_version": 1,
-        "arm": args.arm,
-        "kind": spec["kind"],
-        "model_name": spec["model_name"],
+        "schema_version": 2,
+        "arm": runtime_arm,
+        "legacy_arm": args.arm,
+        "kind": _model_kind_to_prompt_kind(recipe["model_kind"]),
+        "model_kind": recipe["model_kind"],
+        "model_tag": recipe["model_tag"],
+        "model_name": recipe["model_name"],
+        "model_recipe": recipe,
         "noise_pi": float(args.pi),
         "model_seed": int(args.model_seed),
         "data_root": str(args.data_root),
@@ -1073,7 +1704,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         "hf_cache": str(args.hf_cache),
         "prompt": (
             "Sequential events: x1 ... x20"
-            if spec["kind"] == "bert"
+            if recipe["model_kind"] == "encoder"
             else "Sequential events: x1 ... x20\\nOutcome (0 or 1):"
         ),
         "training_objective": "binary classification cross entropy only",
@@ -1085,6 +1716,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         "effective_batch_size": EFFECTIVE_BATCH_SIZE,
         "micro_batch_size": micro_batch,
         "gradient_accumulation": accumulation,
+        "eval_batch_size": eval_batch,
         "maximum_epochs": args.max_epochs,
         "early_stopping_patience": args.patience,
         "early_stopping_criterion": "standard observed-label validation loss",
@@ -1093,30 +1725,46 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         "total_updates": total_updates,
         "scheduler": "linear decay",
         "lora": {
-            "rank": LORA_RANK,
-            "alpha": LORA_ALPHA,
-            "dropout": LORA_DROPOUT,
-            "targets": list(spec["lora_targets"]),
-            "bias": "none",
+            "enabled": recipe["peft"],
+            "rank": recipe["lora_r"],
+            "alpha": recipe["lora_alpha"],
+            "dropout": recipe["lora_dropout"],
+            "targets": list(recipe["lora_targets"]),
+            "bias": recipe["lora_bias"],
         },
+        "quantization": recipe["quantization"],
+        "compute_dtype": recipe["compute_dtype"],
+        "gradient_checkpointing": recipe["gradient_checkpointing"],
         "max_length": max_length,
         "tokenization_audit": "tokenization_audit.json",
-        "dtype": str(dtype),
+        "dtype": recipe["dtype"],
+        "parameter_dtype": (
+            "fp32"
+            if recipe["quantization"] == "none" and not recipe["peft"]
+            else recipe["dtype"]
+        ),
         "hardware": _hardware(device),
         "total_parameters": sum(parameter.numel() for parameter in model.parameters()),
         "trainable_parameters": sum(parameter.numel() for parameter in trainable_parameters),
-        "checkpoint_state": "LoRA adapter and classification head only",
+        "checkpoint_state": (
+            "LoRA adapter and classification head only"
+            if recipe["peft"]
+            else "all trainable parameters"
+        ),
+        "max_train_rows": int(args.max_train_rows),
         "smoke": bool(args.smoke),
     }
     atomic_json_dump(configuration, run_dir / "config.json")
 
     scorer = HFScorer(
-        args.arm,
+        runtime_arm,
         model,
         tokenizer,
         max_length,
         device,
-        batch_size=args.eval_batch,
+        batch_size=eval_batch,
+        model_kind=recipe["model_kind"],
+        compute_dtype=compute_dtype,
     )
     probe_sequence = frames["val"].iloc[0]["X"]
     started = time.time()
@@ -1132,19 +1780,29 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             input_ids = batch["input_ids"].to(device, non_blocking=True)
             attention_mask = batch["attention_mask"].to(device, non_blocking=True)
             labels = batch["labels"].to(device, non_blocking=True)
-            with autocast_context(device):
-                logits = model_logits(args.arm, model, input_ids, attention_mask)
+            with autocast_context(device, compute_dtype):
+                logits = model_logits(recipe["model_kind"], model, input_ids, attention_mask)
                 loss = nn.functional.cross_entropy(logits.float(), labels)
-            (loss / accumulation).backward()
+            scaled_loss = loss / accumulation
+            if scaler.is_enabled():
+                scaler.scale(scaled_loss).backward()
+            else:
+                scaled_loss.backward()
             if batch_index % accumulation == 0 or batch_index == len(loaders["train"]):
-                optimizer.step()
+                if scaler.is_enabled():
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
                 scheduler.step()
                 optimizer.zero_grad(set_to_none=True)
             batch_size = labels.shape[0]
             total_loss += float(loss.item()) * batch_size
             examples += batch_size
 
-        validation = evaluate_model(args.arm, model, loaders["val"], device)
+        validation = evaluate_model(
+            recipe["model_kind"], model, loaders["val"], device, compute_dtype
+        )
         improved = stopper.update(validation["loss"])
         if improved:
             best_epoch = epoch
@@ -1170,7 +1828,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             scheduler,
             scaler,
             loader_generator,
-            args.arm,
+            runtime_arm,
             args.pi,
             args.model_seed,
             epoch,
@@ -1180,13 +1838,14 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             max_length,
             history,
             probe,
+            recipe,
         )
         payload["training_seconds"] = elapsed
         payload["maximum_epochs"] = int(args.max_epochs)
         payload["patience"] = int(args.patience)
         payload["micro_batch_size"] = int(micro_batch)
         payload["gradient_accumulation"] = int(accumulation)
-        payload["model_name"] = spec["model_name"]
+        payload["model_name"] = recipe["model_name"]
         payload["data_fingerprint"] = data_fingerprint
         payload["lora"] = dict(configuration["lora"])
         payload["tokenizer_metadata"] = {
@@ -1203,16 +1862,17 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         atomic_torch_save(payload, last_path)
         atomic_torch_save(
             {
-                "schema_version": 1,
-                "state_format": "lora_adapter_and_classification_head_only",
+                "schema_version": 2,
+                "state_format": payload["state_format"],
                 "adapter_and_head_state_dict": payload["adapter_and_head_state_dict"],
                 "trainable_parameter_names": payload["trainable_parameter_names"],
-                "arm": args.arm,
+                "arm": runtime_arm,
                 "noise_pi": float(args.pi),
                 "model_seed": int(args.model_seed),
                 "current_epoch": epoch,
                 "max_length": max_length,
-                "model_name": spec["model_name"],
+                "model_name": recipe["model_name"],
+                "model_recipe": recipe,
                 "lora": dict(configuration["lora"]),
                 "tokenizer_metadata": payload["tokenizer_metadata"],
                 "validation": {
@@ -1225,7 +1885,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             run_dir / "epochs" / f"epoch_{epoch:03d}_eval.pt",
         )
         print(
-            f"[ordered_train_hf] {args.arm} pi={args.pi:.1f} seed={args.model_seed} "
+            f"[ordered_train_hf] {runtime_arm} pi={args.pi:.1f} seed={args.model_seed} "
             f"epoch={epoch} train={record['train_loss']:.5f} "
             f"val={validation['loss']:.5f} auc={validation['observed_auc']:.4f}",
             flush=True,
@@ -1239,17 +1899,26 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
     best = torch.load(best_path, map_location="cpu", weights_only=False)
     load_trainable_state_dict(model, best["adapter_and_head_state_dict"])
     reload_difference = _verify_reload_probe(scorer, best["reload_probe"])
-    validation = evaluate_model(args.arm, model, loaders["val"], device)
+    validation = evaluate_model(
+        recipe["model_kind"], model, loaders["val"], device, compute_dtype
+    )
     threshold, validation_f1 = select_f1_threshold(
         validation["observed_labels"], validation["probabilities"]
     )
-    test = evaluate_model(args.arm, model, loaders["test"], device)
+    test = evaluate_model(
+        recipe["model_kind"], model, loaders["test"], device, compute_dtype
+    )
     test_predictions = (test["probabilities"] >= threshold).astype(np.uint8)
     training_seconds = prior_training_seconds + time.time() - started
     done = {
         "status": "complete",
-        "arm": args.arm,
-        "model_name": spec["model_name"],
+        "arm": runtime_arm,
+        "legacy_arm": args.arm,
+        "model_name": recipe["model_name"],
+        "model_tag": recipe["model_tag"],
+        "model_kind": recipe["model_kind"],
+        "peft": recipe["peft"],
+        "quantization": recipe["quantization"],
         "noise_pi": float(args.pi),
         "model_seed": int(args.model_seed),
         "selected_checkpoint": "best_standard.pt",
@@ -1289,7 +1958,45 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--arm", choices=tuple(MODEL_SPECS), required=True)
+    parser.add_argument("--arm", choices=tuple(MODEL_SPECS), default=None)
+    parser.add_argument("--model-name", default=None)
+    parser.add_argument("--model-kind", choices=("encoder", "decoder"), default=None)
+    parser.add_argument("--model-tag", default=None)
+    parser.add_argument("--model-revision", default=None)
+    parser.add_argument("--tokenizer-name", default=None)
+    parser.add_argument("--tokenizer-revision", default=None)
+    parser.add_argument(
+        "--peft",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="enable LoRA/PEFT (use --no-peft for full fine-tuning)",
+    )
+    parser.add_argument(
+        "--quantization", choices=("none", "8bit", "4bit"), default="none"
+    )
+    parser.add_argument(
+        "--dtype", choices=("auto", "bf16", "fp16", "fp32"), default="auto"
+    )
+    parser.add_argument(
+        "--compute-dtype",
+        choices=("auto", "bf16", "fp16", "fp32"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--gradient-checkpointing",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--lora-r", type=int, default=LORA_RANK)
+    parser.add_argument("--lora-alpha", type=int, default=LORA_ALPHA)
+    parser.add_argument("--lora-dropout", type=float, default=LORA_DROPOUT)
+    parser.add_argument(
+        "--lora-targets",
+        default=None,
+        help="comma-separated target-module suffixes; defaults depend on model kind",
+    )
+    parser.add_argument("--trust-remote-code", action="store_true")
+    parser.add_argument("--local-files-only", action="store_true")
     parser.add_argument("--pi", type=float, choices=NOISE_LEVELS, required=True)
     parser.add_argument("--model-seed", type=int, required=True)
     parser.add_argument("--data-root", type=Path, default=DEFAULT_DATA_ROOT)
@@ -1302,7 +2009,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--patience", type=int, default=PATIENCE)
     parser.add_argument("--micro-batch", type=int, default=None)
     parser.add_argument("--gradient-accumulation", type=int, default=None)
-    parser.add_argument("--eval-batch", type=int, default=64)
+    parser.add_argument(
+        "--eval-batch",
+        type=int,
+        default=None,
+        help="evaluation batch size (default: 64 for encoders/legacy, 2 for decoders)",
+    )
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--threads", type=int, default=16)
     parser.add_argument("--audit-batch-size", type=int, default=4096)
@@ -1311,6 +2023,27 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.max_epochs <= 0 or args.patience <= 0:
         parser.error("max epochs and patience must be positive")
+    if args.arm is None and (args.model_name is None or args.model_kind is None):
+        parser.error("provide --arm, or both --model-name and --model-kind")
+    if args.arm is not None and args.model_kind is not None:
+        expected_kind = _arm_model_kind(args.arm)
+        if args.model_kind != expected_kind:
+            parser.error(
+                f"--arm {args.arm} has model kind {expected_kind}, not {args.model_kind}"
+            )
+    if args.arm is not None and _arm_recipe_is_overridden(args) and not args.model_tag:
+        parser.error("arm recipe overrides require an explicit --model-tag")
+    if args.peft is False and args.quantization != "none":
+        parser.error("quantized training requires --peft")
+    if args.lora_r <= 0 or args.lora_alpha <= 0:
+        parser.error("LoRA rank and alpha must be positive")
+    if not 0.0 <= args.lora_dropout < 1.0:
+        parser.error("LoRA dropout must be in [0, 1)")
+    if any(
+        value is not None and value <= 0
+        for value in (args.micro_batch, args.gradient_accumulation)
+    ) or (args.eval_batch is not None and args.eval_batch <= 0):
+        parser.error("batch sizes and gradient accumulation must be positive")
     return args
 
 

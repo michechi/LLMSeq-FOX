@@ -216,7 +216,14 @@ def _training_row(done_path: Path, done: Mapping[str, Any]) -> dict[str, Any]:
     config = _read_json(done_path.parent / "config.json") or {}
     combined = {"done": done, "config": config}
     model = _normalise_model(
-        _first(combined, "model_name", "model", "arm", default=done_path.parent.parent.parent.name)
+        _first(
+            combined,
+            "model_tag",
+            "model_name",
+            "model",
+            "arm",
+            default=done_path.parent.parent.parent.name,
+        )
     )
     pi = _float_or_nan(_first(combined, "noise_pi", "noise_level", "pi"))
     seed = _int_or_default(_first(combined, "model_seed", "seed"), 0)
@@ -941,7 +948,9 @@ def configuration_inventory(
             if done is not None:
                 continue
             config = _read_json(config_path) or {}
-            model = _normalise_model(_first(config, "model_name", "model", "arm"))
+            model = _normalise_model(
+                _first(config, "model_tag", "model_name", "model", "arm")
+            )
             pi = _float_or_nan(_first(config, "noise_pi", "noise_level", "pi"))
             seed = _int_or_default(_first(config, "model_seed", "seed"), 0)
             key = ("training", model, pi, seed)

@@ -25,6 +25,9 @@ dev = [
     "pytest>=7.0.0",
     "ruff>=0.1.0",
 ]
+quantization = [
+    "bitsandbytes>=0.43.0",
+]
 
 [build-system]
 requires = ["hatchling"]
