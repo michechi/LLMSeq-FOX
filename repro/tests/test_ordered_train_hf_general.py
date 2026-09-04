@@ -18,6 +18,7 @@ from src.oc_completion.ordered_train_hf import (
     DEFAULT_HF_CACHE,
     MODEL_SPECS,
     _requested_recipe_matches_stored,
+    _resolve_batch_configuration,
     _validate_resume_configuration,
     build_hf_model,
     parse_args,
@@ -32,14 +33,19 @@ def _required_args() -> list[str]:
 
 def _resume_configuration(
     recipe: dict[str, object],
+    *,
+    effective_batch: int = 16,
+    micro_batch: int = 1,
+    accumulation: int = 16,
 ) -> tuple[dict[str, object], dict[str, object]]:
     requested: dict[str, object] = {
         "recipe": recipe,
         "noise_pi": 0.3,
         "model_seed": 9950,
         "data_fingerprint": "abc123",
-        "micro_batch": 1,
-        "accumulation": 16,
+        "effective_batch": effective_batch,
+        "micro_batch": micro_batch,
+        "accumulation": accumulation,
         "eval_batch": 2,
         "max_epochs": 20,
         "patience": 3,
@@ -51,6 +57,7 @@ def _resume_configuration(
         "noise_pi": requested["noise_pi"],
         "model_seed": requested["model_seed"],
         "data_fingerprint": requested["data_fingerprint"],
+        "effective_batch_size": requested["effective_batch"],
         "micro_batch_size": requested["micro_batch"],
         "gradient_accumulation": requested["accumulation"],
         "eval_batch_size": requested["eval_batch"],
@@ -164,6 +171,97 @@ def test_generic_qwen_qlora_arguments_and_directories() -> None:
     assert args.gradient_accumulation == 16
     assert args.eval_batch == 2
     assert args.resume is True
+
+
+def test_effective_batch_size_defaults_to_protocol_value() -> None:
+    args = parse_args(
+        [
+            "--model-name",
+            "Qwen/Qwen2.5-14B",
+            "--model-kind",
+            "decoder",
+            *_required_args(),
+        ]
+    )
+
+    assert args.effective_batch_size == 16
+    assert _resolve_batch_configuration(args, None, "decoder") == (1, 16, 2, 16)
+
+
+def test_effective_batch_size_64_is_accepted_and_derives_accumulation() -> None:
+    args = parse_args(
+        [
+            "--model-name",
+            "Qwen/Qwen2.5-14B",
+            "--model-kind",
+            "decoder",
+            "--effective-batch-size",
+            "64",
+            "--micro-batch",
+            "64",
+            *_required_args(),
+        ]
+    )
+
+    assert args.effective_batch_size == 64
+    assert _resolve_batch_configuration(args, None, "decoder") == (64, 1, 2, 64)
+
+
+def test_effective_batch_size_64_accepts_micro_batch_32_with_two_steps() -> None:
+    args = parse_args(
+        [
+            "--model-name",
+            "Qwen/Qwen2.5-14B",
+            "--model-kind",
+            "decoder",
+            "--effective-batch-size",
+            "64",
+            "--micro-batch",
+            "32",
+            "--gradient-accumulation",
+            "2",
+            *_required_args(),
+        ]
+    )
+
+    assert _resolve_batch_configuration(args, None, "decoder") == (32, 2, 2, 64)
+
+
+def test_batch_configuration_checks_product_against_selected_effective_batch() -> None:
+    args = parse_args(
+        [
+            "--model-name",
+            "Qwen/Qwen2.5-14B",
+            "--model-kind",
+            "decoder",
+            "--effective-batch-size",
+            "64",
+            "--micro-batch",
+            "16",
+            "--gradient-accumulation",
+            "1",
+            *_required_args(),
+        ]
+    )
+
+    with pytest.raises(ValueError, match=r"(?i)effective.*64|64.*effective"):
+        _resolve_batch_configuration(args, None, "decoder")
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_effective_batch_size_must_be_positive(value: str) -> None:
+    with pytest.raises(SystemExit):
+        parse_args(
+            [
+                "--model-name",
+                "Qwen/Qwen2.5-14B",
+                "--model-kind",
+                "decoder",
+                "--effective-batch-size",
+                value,
+                *_required_args(),
+            ]
+        )
 
 
 def test_remote_model_revision_is_pinned_and_requested_revision_retained(
@@ -428,6 +526,7 @@ def test_resume_configuration_accepts_an_identical_run(tmp_path: Path) -> None:
         ("noise_pi", 0.2),
         ("model_seed", 1234),
         ("data_fingerprint", "different-data"),
+        ("effective_batch_size", 64),
         ("micro_batch_size", 2),
         ("gradient_accumulation", 8),
         ("eval_batch_size", 4),

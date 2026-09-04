@@ -34,10 +34,11 @@
 # Qwen2.5-14B, 4-bit NF4 QLoRA (the trainer selects NF4/double quantization):
 #   export OC_MODEL_NAME=Qwen/Qwen2.5-14B
 #   export OC_MODEL_KIND=decoder
-#   export OC_MODEL_TAG=qwen25_14b_qlora4
+#   export OC_MODEL_TAG=qwen25_14b_qlora4_eb64
 #   export OC_PEFT=1 OC_QUANTIZATION=4bit
 #   export OC_DTYPE=bf16 OC_COMPUTE_DTYPE=bf16
-#   export OC_MICRO_BATCH=1 OC_GRADIENT_ACCUMULATION=16 OC_EVAL_BATCH=2
+#   export OC_EFFECTIVE_BATCH_SIZE=64
+#   export OC_MICRO_BATCH=64 OC_GRADIENT_ACCUMULATION=1 OC_EVAL_BATCH=64
 #   export OC_GRADIENT_CHECKPOINTING=1
 #   sbatch scripts/slurm/FOX/oc_hole_train_hf_general.slurm
 
@@ -92,8 +93,9 @@ Training:
   --model-seed N                      Default: 9950
   --max-epochs N                      Default: 20
   --patience N                        Default: 3
+  --effective-batch-size N            Default: 16
   --micro-batch N                     Default: 1
-  --gradient-accumulation N           Default: 16
+  --gradient-accumulation N           Default: derived from effective/micro batch
   --eval-batch N                      Default: 2
   --workers N                         Default: allocated CPU count
   --threads N                         Default: allocated CPU count
@@ -188,6 +190,8 @@ while (( $# > 0 )); do
             need_value "$@"; OC_MAX_EPOCHS="$2"; shift 2 ;;
         --patience)
             need_value "$@"; OC_PATIENCE="$2"; shift 2 ;;
+        --effective-batch-size)
+            need_value "$@"; OC_EFFECTIVE_BATCH_SIZE="$2"; shift 2 ;;
         --micro-batch)
             need_value "$@"; OC_MICRO_BATCH="$2"; shift 2 ;;
         --gradient-accumulation)
@@ -273,8 +277,9 @@ OC_PI="${OC_PI:-0.3}"
 OC_MODEL_SEED="${OC_MODEL_SEED:-9950}"
 OC_MAX_EPOCHS="${OC_MAX_EPOCHS:-20}"
 OC_PATIENCE="${OC_PATIENCE:-3}"
+OC_EFFECTIVE_BATCH_SIZE="${OC_EFFECTIVE_BATCH_SIZE:-16}"
 OC_MICRO_BATCH="${OC_MICRO_BATCH:-1}"
-OC_GRADIENT_ACCUMULATION="${OC_GRADIENT_ACCUMULATION:-16}"
+OC_GRADIENT_ACCUMULATION="${OC_GRADIENT_ACCUMULATION:-}"
 OC_EVAL_BATCH="${OC_EVAL_BATCH:-2}"
 OC_WORKERS="${OC_WORKERS:-${SLURM_CPUS_PER_TASK:-8}}"
 OC_THREADS="${OC_THREADS:-${SLURM_CPUS_PER_TASK:-8}}"
@@ -358,8 +363,22 @@ case "$OC_PI" in
         exit 2
         ;;
 esac
+for batch_name in OC_EFFECTIVE_BATCH_SIZE OC_MICRO_BATCH; do
+    batch_value="${!batch_name}"
+    if [[ ! "$batch_value" =~ ^[0-9]+$ ]] || (( batch_value < 1 )); then
+        echo "ERROR: $batch_name must be a positive integer: $batch_value" >&2
+        exit 2
+    fi
+done
+if [[ -z "$OC_GRADIENT_ACCUMULATION" ]]; then
+    if (( OC_EFFECTIVE_BATCH_SIZE % OC_MICRO_BATCH != 0 )); then
+        echo "ERROR: OC_EFFECTIVE_BATCH_SIZE must be divisible by OC_MICRO_BATCH" >&2
+        exit 2
+    fi
+    OC_GRADIENT_ACCUMULATION=$((OC_EFFECTIVE_BATCH_SIZE / OC_MICRO_BATCH))
+fi
 for integer_name in \
-        OC_MODEL_SEED OC_MAX_EPOCHS OC_PATIENCE OC_MICRO_BATCH \
+        OC_MODEL_SEED OC_MAX_EPOCHS OC_PATIENCE OC_EFFECTIVE_BATCH_SIZE OC_MICRO_BATCH \
         OC_GRADIENT_ACCUMULATION OC_EVAL_BATCH OC_WORKERS OC_THREADS \
         OC_AUDIT_BATCH_SIZE OC_MAX_TRAIN_ROWS OC_LORA_R OC_LORA_ALPHA; do
     integer_value="${!integer_name}"
@@ -369,13 +388,18 @@ for integer_name in \
     fi
 done
 for positive_name in \
-        OC_MAX_EPOCHS OC_PATIENCE OC_MICRO_BATCH OC_GRADIENT_ACCUMULATION \
+        OC_MAX_EPOCHS OC_PATIENCE OC_EFFECTIVE_BATCH_SIZE OC_MICRO_BATCH \
+        OC_GRADIENT_ACCUMULATION \
         OC_EVAL_BATCH OC_THREADS OC_AUDIT_BATCH_SIZE OC_LORA_R OC_LORA_ALPHA; do
     if (( ${!positive_name} < 1 )); then
         echo "ERROR: $positive_name must be positive: ${!positive_name}" >&2
         exit 2
     fi
 done
+if (( OC_MICRO_BATCH * OC_GRADIENT_ACCUMULATION != OC_EFFECTIVE_BATCH_SIZE )); then
+    echo "ERROR: OC_MICRO_BATCH * OC_GRADIENT_ACCUMULATION must equal OC_EFFECTIVE_BATCH_SIZE ($OC_EFFECTIVE_BATCH_SIZE)" >&2
+    exit 2
+fi
 
 python3 - "$OC_LORA_DROPOUT" <<'PY'
 import math
@@ -553,7 +577,7 @@ echo "Model tag: $OC_MODEL_TAG"
 echo "PEFT / quantization: $OC_PEFT / $OC_QUANTIZATION"
 echo "Model dtype / quantized compute dtype: $OC_DTYPE / $OC_COMPUTE_DTYPE"
 echo "Noise pi / model seed: $OC_PI / $OC_MODEL_SEED"
-echo "Micro-batch / accumulation / effective batch: $OC_MICRO_BATCH / $OC_GRADIENT_ACCUMULATION / $((OC_MICRO_BATCH * OC_GRADIENT_ACCUMULATION))"
+echo "Micro-batch / accumulation / effective batch: $OC_MICRO_BATCH / $OC_GRADIENT_ACCUMULATION / $OC_EFFECTIVE_BATCH_SIZE"
 echo "Evaluation batch: $OC_EVAL_BATCH"
 echo "Audit batch / maximum training rows: $OC_AUDIT_BATCH_SIZE / $OC_MAX_TRAIN_ROWS"
 echo "Gradient checkpointing: $OC_GRADIENT_CHECKPOINTING"
@@ -577,6 +601,7 @@ TRAIN_ARGS=(
     --hf-cache "$OC_HF_CACHE"
     --max-epochs "$OC_MAX_EPOCHS"
     --patience "$OC_PATIENCE"
+    --effective-batch-size "$OC_EFFECTIVE_BATCH_SIZE"
     --micro-batch "$OC_MICRO_BATCH"
     --gradient-accumulation "$OC_GRADIENT_ACCUMULATION"
     --eval-batch "$OC_EVAL_BATCH"

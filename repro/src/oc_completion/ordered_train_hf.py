@@ -1361,6 +1361,7 @@ def _validate_resume_configuration(
     noise_pi: float,
     model_seed: int,
     data_fingerprint: str,
+    effective_batch: int,
     micro_batch: int,
     accumulation: int,
     eval_batch: int,
@@ -1375,6 +1376,7 @@ def _validate_resume_configuration(
         "noise_pi": float(noise_pi),
         "model_seed": int(model_seed),
         "data_fingerprint": data_fingerprint,
+        "effective_batch_size": int(effective_batch),
         "micro_batch_size": int(micro_batch),
         "gradient_accumulation": int(accumulation),
         "eval_batch_size": int(eval_batch),
@@ -1492,33 +1494,77 @@ def _make_loaders(
     return loaders, generator
 
 
-def train(args: argparse.Namespace) -> dict[str, Any]:
-    if float(args.pi) not in NOISE_LEVELS:
-        raise ValueError(f"pi must be one of {NOISE_LEVELS}")
-    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
-    requested_recipe = resolve_training_recipe(args, device)
-    legacy_spec = MODEL_SPECS.get(args.arm) if args.arm is not None else None
+def _resolve_batch_configuration(
+    args: argparse.Namespace,
+    legacy_spec: Mapping[str, Any] | None,
+    model_kind: str,
+) -> tuple[int, int, int, int]:
+    """Resolve micro/evaluation batches and gradient accumulation."""
+    effective_batch = int(args.effective_batch_size)
     default_micro_batch = (
         int(legacy_spec["micro_batch"])
         if legacy_spec is not None
-        else 16 if requested_recipe["model_kind"] == "encoder" else 1
+        else 16 if model_kind == "encoder" else 1
     )
     default_accumulation = (
         int(legacy_spec["gradient_accumulation"])
         if legacy_spec is not None
         else EFFECTIVE_BATCH_SIZE // default_micro_batch
     )
-    micro_batch = args.micro_batch or default_micro_batch
-    accumulation = args.gradient_accumulation or default_accumulation
-    eval_batch = args.eval_batch or (
-        64
-        if legacy_spec is not None or requested_recipe["model_kind"] == "encoder"
-        else 2
-    )
-    if micro_batch * accumulation != EFFECTIVE_BATCH_SIZE:
+
+    if args.micro_batch is None and args.gradient_accumulation is None:
+        micro_batch = default_micro_batch
+        if effective_batch == EFFECTIVE_BATCH_SIZE:
+            accumulation = default_accumulation
+        else:
+            if effective_batch % micro_batch:
+                raise ValueError(
+                    "effective batch size must be divisible by the default "
+                    f"micro-batch {micro_batch}; pass --micro-batch explicitly"
+                )
+            accumulation = effective_batch // micro_batch
+    elif args.micro_batch is None:
+        accumulation = int(args.gradient_accumulation)
+        if effective_batch % accumulation:
+            raise ValueError(
+                "effective batch size must be divisible by gradient accumulation"
+            )
+        micro_batch = effective_batch // accumulation
+    elif args.gradient_accumulation is None:
+        micro_batch = int(args.micro_batch)
+        if effective_batch % micro_batch:
+            raise ValueError(
+                "effective batch size must be divisible by the micro-batch size"
+            )
+        accumulation = effective_batch // micro_batch
+    else:
+        micro_batch = int(args.micro_batch)
+        accumulation = int(args.gradient_accumulation)
+
+    if micro_batch * accumulation != effective_batch:
         raise ValueError(
-            f"micro_batch * gradient_accumulation must equal {EFFECTIVE_BATCH_SIZE}"
+            "micro_batch * gradient_accumulation must equal the selected "
+            f"effective batch size {effective_batch}"
         )
+    eval_batch = int(args.eval_batch) if args.eval_batch is not None else (
+        64 if legacy_spec is not None or model_kind == "encoder" else 2
+    )
+    return micro_batch, accumulation, eval_batch, effective_batch
+
+
+def train(args: argparse.Namespace) -> dict[str, Any]:
+    if float(args.pi) not in NOISE_LEVELS:
+        raise ValueError(f"pi must be one of {NOISE_LEVELS}")
+    device = torch.device("cuda" if torch.cuda.is_available() and not args.cpu else "cpu")
+    requested_recipe = resolve_training_recipe(args, device)
+    legacy_spec = MODEL_SPECS.get(args.arm) if args.arm is not None else None
+    micro_batch, accumulation, eval_batch, effective_batch = (
+        _resolve_batch_configuration(
+            args,
+            legacy_spec,
+            requested_recipe["model_kind"],
+        )
+    )
     suffix = "_smoke" if args.smoke else ""
     run_identity = (
         args.arm
@@ -1562,6 +1608,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             noise_pi=args.pi,
             model_seed=args.model_seed,
             data_fingerprint=data_fingerprint,
+            effective_batch=effective_batch,
             micro_batch=micro_batch,
             accumulation=accumulation,
             eval_batch=eval_batch,
@@ -1661,6 +1708,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
             "max_length": max_length,
             "maximum_epochs": int(args.max_epochs),
             "patience": int(args.patience),
+            "effective_batch_size": int(effective_batch),
             "micro_batch_size": int(micro_batch),
             "gradient_accumulation": int(accumulation),
             "data_fingerprint": data_fingerprint,
@@ -1668,9 +1716,17 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         if checkpoint.get("model_recipe") is not None:
             expected["model_recipe"] = recipe
         for key, value in expected.items():
-            if checkpoint.get(key) != value:
+            actual = checkpoint.get(key)
+            if key == "effective_batch_size" and actual is None:
+                # Checkpoints written before effective batches became configurable
+                # already contain both factors, so their value is unambiguous.
+                stored_micro = checkpoint.get("micro_batch_size")
+                stored_accumulation = checkpoint.get("gradient_accumulation")
+                if stored_micro is not None and stored_accumulation is not None:
+                    actual = int(stored_micro) * int(stored_accumulation)
+            if actual != value:
                 raise ValueError(
-                    f"resume mismatch for {key}: {checkpoint.get(key)!r} != {value!r}"
+                    f"resume mismatch for {key}: {actual!r} != {value!r}"
                 )
         load_trainable_state_dict(model, checkpoint["adapter_and_head_state_dict"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -1713,7 +1769,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         "llama_head": "Linear(hidden,hidden/2)-Tanh-Dropout(0.1)-Linear(hidden/2,2)",
         "optimizer": "AdamW",
         "learning_rate": LEARNING_RATE,
-        "effective_batch_size": EFFECTIVE_BATCH_SIZE,
+        "effective_batch_size": effective_batch,
         "micro_batch_size": micro_batch,
         "gradient_accumulation": accumulation,
         "eval_batch_size": eval_batch,
@@ -1843,6 +1899,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         payload["training_seconds"] = elapsed
         payload["maximum_epochs"] = int(args.max_epochs)
         payload["patience"] = int(args.patience)
+        payload["effective_batch_size"] = int(effective_batch)
         payload["micro_batch_size"] = int(micro_batch)
         payload["gradient_accumulation"] = int(accumulation)
         payload["model_name"] = recipe["model_name"]
@@ -1921,6 +1978,7 @@ def train(args: argparse.Namespace) -> dict[str, Any]:
         "quantization": recipe["quantization"],
         "noise_pi": float(args.pi),
         "model_seed": int(args.model_seed),
+        "effective_batch_size": int(effective_batch),
         "selected_checkpoint": "best_standard.pt",
         "selection_criterion": "standard observed-label validation loss",
         "best_epoch": int(best["best_epoch"]),
@@ -2007,6 +2065,12 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--max-epochs", type=int, default=MAX_EPOCHS)
     parser.add_argument("--patience", type=int, default=PATIENCE)
+    parser.add_argument(
+        "--effective-batch-size",
+        type=int,
+        default=EFFECTIVE_BATCH_SIZE,
+        help=f"examples per optimizer update (default: {EFFECTIVE_BATCH_SIZE})",
+    )
     parser.add_argument("--micro-batch", type=int, default=None)
     parser.add_argument("--gradient-accumulation", type=int, default=None)
     parser.add_argument(
@@ -2039,7 +2103,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("LoRA rank and alpha must be positive")
     if not 0.0 <= args.lora_dropout < 1.0:
         parser.error("LoRA dropout must be in [0, 1)")
-    if any(
+    if args.effective_batch_size <= 0 or any(
         value is not None and value <= 0
         for value in (args.micro_batch, args.gradient_accumulation)
     ) or (args.eval_batch is not None and args.eval_batch <= 0):
